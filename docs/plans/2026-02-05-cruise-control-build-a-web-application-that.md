@@ -91,7 +91,7 @@ The application is a web-based SQLite database editor. Users authenticate via JW
 1. **rusqlite + async**: rusqlite is synchronous. Every DB call must be wrapped in `spawn_blocking`. Forgetting this blocks the tokio runtime.
 2. **ALTER TABLE limitations in SQLite**: SQLite doesn't support `DROP COLUMN` before version 3.35.0. Must ensure the bundled SQLite version supports it, or use the `bundled` feature of rusqlite.
 3. **JWT key management**: Private keys and certificates must never be committed. The `.gitignore` must exclude `*.pem`, `*.key` files. Test keys and certificates should be generated dynamically.
-4. **htmx CSRF**: htmx sends AJAX requests that bypass traditional CSRF protections. SameSite=Strict cookies alone are not sufficient for destructive DDL operations. Must implement explicit CSRF tokens: generate a per-session token server-side, embed it in templates via a `<meta>` tag, and configure htmx globally with `hx-headers='{"X-CSRF-Token": "..."}'` (or use `document.body.addEventListener("htmx:configRequest", ...)` to attach the token to every request). The server must validate the `X-CSRF-Token` header on all state-changing endpoints.
+4. **htmx CSRF**: htmx sends AJAX requests that bypass traditional form-based CSRF protections. **SameSite=Strict cookies are a defense-in-depth measure only and are NOT sufficient as the sole CSRF protection**, especially for a database editor performing destructive DDL operations (DROP TABLE, DROP COLUMN). The **primary** CSRF defense is explicit per-session CSRF tokens: generate a cryptographically random 32-byte token server-side per session, embed it in every page via a `<meta name="csrf-token">` tag, and configure htmx globally to attach it to all requests using either `hx-headers='{"X-CSRF-Token": "..."}'` on the `<body>` element or `document.body.addEventListener("htmx:configRequest", ...)`. The server MUST validate the `X-CSRF-Token` header on all state-changing endpoints (POST, PUT, DELETE) and return 403 Forbidden if the token is missing or invalid. SameSite=Strict on the session cookie provides an additional layer but must not be relied upon alone.
 5. **SQL injection via table/column names**: Since we're building DDL dynamically, table and column names must be strictly validated (alphanumeric + underscore only) to prevent SQL injection.
 6. **Playwright test flakiness**: Server startup race condition. Tests must wait for server health check before running.
 7. **Super-linter configuration**: May flag Rust code style differently than `cargo clippy`. Need to configure linter rules to avoid false positives.
@@ -623,7 +623,7 @@ tower-http = { version = "0.6", features = ["fs"] }
 
 `src/handlers/auth.rs`:
 - `login_page()` - renders login.html template
-- `login_submit(Form<LoginForm>)` - validates JWT, sets Secure HttpOnly SameSite=Strict cookie, generates a per-session CSRF token (random 32-byte hex string stored server-side keyed to the session), sets it as a second cookie or embeds it in the redirect response, redirects to /
+- `login_submit(Form<LoginForm>)` - validates JWT, sets Secure HttpOnly SameSite=Strict session cookie (defense-in-depth), generates an explicit per-session CSRF token (cryptographically random 32-byte hex string stored server-side keyed to the session) as the primary CSRF defense, embeds it in the redirect response for template rendering, redirects to /
 - `logout()` - clears cookie and CSRF token, redirects to /login
 - `dashboard(Request)` - extracts Claims from extensions, renders dashboard.html with CSRF token embedded in a `<meta name="csrf-token">` tag for htmx to read
 
@@ -1256,12 +1256,12 @@ CRUISE-012 (Integration) ← depends on all above
       "complexity": "high",
       "acceptance_criteria": [
         "Login page renders at GET /login",
-        "POST /login validates JWT, sets Secure HttpOnly SameSite=Strict cookie, and generates a per-session CSRF token",
+        "POST /login validates JWT, sets Secure HttpOnly SameSite=Strict cookie (defense-in-depth), and generates an explicit per-session CSRF token as primary CSRF defense",
         "GET /logout clears cookie and redirects to /login",
         "GET / shows dashboard (protected)",
         "GET /static/* serves static files",
         "CSRF token generated per session and validated on all state-changing (POST/PUT/DELETE) protected endpoints via X-CSRF-Token header",
-        "CSRF token embedded in base template via meta tag and attached to htmx requests via htmx:configRequest event listener",
+        "CSRF token embedded in base template via meta tag and attached to all htmx requests via hx-headers attribute on body or htmx:configRequest global event listener",
         "Missing or invalid CSRF token returns 403 Forbidden",
         "Router is structured so table/column routes can be added in CRUISE-006b",
         "cargo build succeeds"
@@ -1404,7 +1404,7 @@ CRUISE-012 (Integration) ← depends on all above
     "SQL injection via dynamically-constructed DDL statements - table/column names must be strictly validated (no quoting, only alphanumeric + underscore)",
     "JWT private key and certificate leakage - .gitignore must exclude *.pem, *.key; tests generate ephemeral keys and certificates",
     "Playwright test flakiness from server startup race condition - playwright.config.ts webServer config handles this but timeout must be sufficient for Rust compilation in CI (120s)",
-    "htmx CSRF vulnerability - hx-* requests bypass traditional form CSRF tokens; SameSite=Strict cookies alone are insufficient for destructive DDL operations. Mitigated by generating per-session CSRF tokens, embedding them in templates via meta tags, and configuring htmx to send them as X-CSRF-Token headers on every request. Server validates the token on all state-changing endpoints (POST/PUT/DELETE)",
+    "htmx CSRF vulnerability - hx-* requests bypass traditional form CSRF tokens; SameSite=Strict cookies are defense-in-depth only and NOT sufficient as sole protection for destructive DDL operations (DROP TABLE, DROP COLUMN). Primary mitigation: explicit per-session CSRF tokens generated server-side, embedded in templates via meta tags, and attached to all htmx requests via hx-headers attribute or htmx:configRequest global event. Server validates X-CSRF-Token header on all state-changing endpoints (POST/PUT/DELETE), returning 403 Forbidden if missing or invalid",
     "Super-linter may have different Rust edition expectations - need to configure RUST_EDITION or accept some false positives",
     "Askama template compile-time errors will fail the entire build - templates must be syntactically correct before integration",
     "CI build times may be slow due to Rust compilation - cargo cache action is critical for acceptable CI performance",
