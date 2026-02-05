@@ -1294,7 +1294,7 @@ CRUISE-012 (Integration) ← depends on all above
 **Parallelization opportunities after CRUISE-001:**
 - CRUISE-002+003, CRUISE-004a, CRUISE-005, CRUISE-007, CRUISE-009, CRUISE-010 can all run in parallel.
 - CRUISE-004b can start as soon as CRUISE-004a completes. The original monolithic CRUISE-004 task was split (per reviewer feedback) because it covered connection pooling, DDL operations, and query helpers — too large for effective parallel execution or focused review. The two subtasks are assigned to separate spawn instances (SPAWN-003a and SPAWN-003b) so the security-sensitive DDL operations and identifier validation in CRUISE-004b can be developed and reviewed independently from the basic connection/query logic in CRUISE-004a. This split reflects a deliberate security boundary: 004a has no SQL injection surface (read-only PRAGMAs), while 004b constructs DDL from user input and requires strict identifier validation — isolating this code enables focused security review of the injection prevention logic without the distraction of connection pool boilerplate.
-- **Critical path optimization via 006a/006b split:** CRUISE-006a (Auth Handlers + Router Setup) depends only on 002, 003, and 005 — it does NOT depend on the Database Layer (004a/004b). This means auth handler development can proceed in parallel with database layer work, rather than being blocked by it. CRUISE-006b (Table/Column Handlers) is the only task that needs both the DB layer and the router setup. This split removes the original CRUISE-006 as a dependency-graph bottleneck and shortens the overall critical path.
+- **Critical path optimization via 006a/006b split:** CRUISE-006a (Auth Handlers + Router Setup) depends only on 002, 003, and 005 — it does NOT depend on the Database Layer (004a/004b). This means auth handler development can proceed in parallel with database layer work, rather than being blocked by it. CRUISE-006b (Table/Column Handlers) is the only task that needs both the DB layer and the router setup. This split removes the original CRUISE-006 as a dependency-graph bottleneck and shortens the overall critical path. Each subtask runs in its own spawn instance (SPAWN-005a and SPAWN-005b) so they can execute in separate processes as soon as their respective dependencies are satisfied.
 - **Auth E2E tests unblocked earlier:** Because CRUISE-008a depends on CRUISE-006a (not 006b), auth E2E tests can begin as soon as the auth handlers and router are wired, without waiting for the table/column handlers or the full DB layer. This further reduces idle time on the critical path.
 
 ---
@@ -1345,12 +1345,20 @@ CRUISE-012 (Integration) ← depends on all above
       "task_ids": ["CRUISE-005"]
     },
     {
-      "id": "SPAWN-005",
-      "name": "Application Wiring",
-      "use_spawn_team": true,
+      "id": "SPAWN-005a",
+      "name": "Auth Handlers & Router Setup",
+      "use_spawn_team": false,
       "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 600",
       "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
-      "task_ids": ["CRUISE-006a", "CRUISE-006b"]
+      "task_ids": ["CRUISE-006a"]
+    },
+    {
+      "id": "SPAWN-005b",
+      "name": "Table/Column Handlers & Full Wiring",
+      "use_spawn_team": false,
+      "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 600",
+      "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+      "task_ids": ["CRUISE-006b"]
     },
     {
       "id": "SPAWN-006a",
@@ -1529,7 +1537,7 @@ CRUISE-012 (Integration) ← depends on all above
       ],
       "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
       "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 600",
-      "spawn_instance": "SPAWN-005"
+      "spawn_instance": "SPAWN-005a"
     },
     {
       "id": "CRUISE-006b",
@@ -1548,7 +1556,7 @@ CRUISE-012 (Integration) ← depends on all above
       ],
       "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
       "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 600",
-      "spawn_instance": "SPAWN-005"
+      "spawn_instance": "SPAWN-005b"
     },
     {
       "id": "CRUISE-007",
