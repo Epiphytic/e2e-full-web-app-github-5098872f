@@ -229,6 +229,8 @@ git commit -m "feat: project scaffolding with .gitignore and minimal Axum server
 
 ### Task CRUISE-002: JWT Key Generation and JWKS Endpoint
 
+**JWKS approach:** The JWKS endpoint does **not** shell out to CLI tools (e.g., `openssl`) at runtime. Instead, the `rsa` crate parses the PEM-encoded RSA public key and extracts the modulus (`n`) and exponent (`e`) components **once at server startup**. The resulting JWKS JSON is cached in shared application state (`Arc<Value>`) so the request handler simply returns the pre-computed response with zero per-request overhead. Similarly, `x509-cert` (not CLI) handles certificate-to-public-key extraction at startup.
+
 **Files:**
 - Create: `scripts/generate-keys.sh`
 - Create: `certs/README.md`
@@ -463,7 +465,7 @@ Expected: 3 tests pass (valid token, certificate-based validation, expired token
 
 **Step 6: Create JWKS endpoint handler**
 
-Create `src/auth/jwks.rs` - uses the `rsa` crate to parse the RSA public key PEM and extract modulus (n) and exponent (e) components **at server startup**. The pre-computed JWKS JSON is cached as shared application state so the handler simply returns it without any per-request parsing. This avoids shelling out to any CLI tool (e.g., `openssl`) at runtime.
+Create `src/auth/jwks.rs` - uses the `rsa` crate (specifically `RsaPublicKey::from_public_key_pem` and the `BigUint` accessors for `n`/`e`) to parse the RSA public key PEM and extract modulus and exponent components **once at server startup**. The pre-computed JWKS JSON is stored in an `Arc<Value>` and cached as shared application state so the handler simply clones and returns it with zero per-request parsing or computation. No CLI tools (e.g., `openssl`) or subprocess calls are ever used for JWKS component extraction — all PEM parsing and RSA key decomposition is handled entirely by the `rsa` Rust library.
 
 ```rust
 use axum::{extract::State, http::StatusCode, response::Json};
@@ -479,9 +481,10 @@ pub struct JwksState {
     pub jwks_json: Arc<Value>,
 }
 
-/// Build the JWKS JSON from a PEM-encoded RSA public key at startup.
+/// Build the JWKS JSON from a PEM-encoded RSA public key.
+/// Called once at server startup; the result is cached in `JwksState`.
 /// Uses the `rsa` crate to parse the PEM and extract modulus/exponent —
-/// no CLI tools or subprocess calls are involved.
+/// no CLI tools, subprocess calls, or per-request computation involved.
 pub fn build_jwks_from_pem(public_key_pem: &[u8]) -> Result<Value, Box<dyn std::error::Error>> {
     let pem_str = std::str::from_utf8(public_key_pem)?;
     let public_key = RsaPublicKey::from_public_key_pem(pem_str)?;
