@@ -1077,7 +1077,7 @@ CRUISE-012 (Integration) ← depends on all above
 
 **Parallelization opportunities after CRUISE-001:**
 - CRUISE-002+003, CRUISE-004a, CRUISE-005, CRUISE-007, CRUISE-009, CRUISE-010 can all run in parallel.
-- CRUISE-004b can start as soon as CRUISE-004a completes, allowing focused security review of DDL operations and identifier validation separately from connection/query logic.
+- CRUISE-004b can start as soon as CRUISE-004a completes. These are assigned to separate spawn instances (SPAWN-003a and SPAWN-003b) so the security-sensitive DDL operations and identifier validation in CRUISE-004b can be reviewed independently from the basic connection/query logic in CRUISE-004a.
 - **Critical path optimization via 006a/006b split:** CRUISE-006a (Auth Handlers + Router Setup) depends only on 002, 003, and 005 — it does NOT depend on the Database Layer (004a/004b). This means auth handler development can proceed in parallel with database layer work, rather than being blocked by it. CRUISE-006b (Table/Column Handlers) is the only task that needs both the DB layer and the router setup. This split removes the original CRUISE-006 as a dependency-graph bottleneck and shortens the overall critical path.
 
 ---
@@ -1104,12 +1104,20 @@ CRUISE-012 (Integration) ← depends on all above
       "task_ids": ["CRUISE-002", "CRUISE-003"]
     },
     {
-      "id": "SPAWN-003",
-      "name": "Database Layer",
-      "use_spawn_team": true,
+      "id": "SPAWN-003a",
+      "name": "Database Connection & Queries",
+      "use_spawn_team": false,
+      "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 300",
+      "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+      "task_ids": ["CRUISE-004a"]
+    },
+    {
+      "id": "SPAWN-003b",
+      "name": "Database DDL Operations (Security-Sensitive)",
+      "use_spawn_team": false,
       "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 600",
       "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
-      "task_ids": ["CRUISE-004a", "CRUISE-004b"]
+      "task_ids": ["CRUISE-004b"]
     },
     {
       "id": "SPAWN-004",
@@ -1219,7 +1227,7 @@ CRUISE-012 (Integration) ← depends on all above
       ],
       "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
       "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 600",
-      "spawn_instance": "SPAWN-003"
+      "spawn_instance": "SPAWN-003a"
     },
     {
       "id": "CRUISE-004b",
@@ -1238,7 +1246,7 @@ CRUISE-012 (Integration) ← depends on all above
       ],
       "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
       "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 600",
-      "spawn_instance": "SPAWN-003"
+      "spawn_instance": "SPAWN-003b"
     },
     {
       "id": "CRUISE-005",
