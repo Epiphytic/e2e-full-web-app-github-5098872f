@@ -1195,16 +1195,21 @@ git commit -m "fix: integration fixes from full E2E verification"
 ```
 CRUISE-001 (Scaffolding + .gitignore)
     ├── CRUISE-002 (JWT + JWKS)
-    │       └── CRUISE-003 (Auth Middleware)
-    ├── CRUISE-004a (SQLite Connection + Queries)
-    │       └── CRUISE-004b (SQLite DDL Operations)
-    ├── CRUISE-005 (Templates + htmx)
+    │       └── CRUISE-003 (Auth Middleware) ──┐
+    ├── CRUISE-004a (SQLite Connection + Queries)  │
+    │       └── CRUISE-004b (SQLite DDL Ops) ──┼── These two paths run in PARALLEL:
+    ├── CRUISE-005 (Templates + htmx) ─────────┤
+    │                                           │
+    │   CRUISE-006a (Auth Handlers + Router) ◄──┘ depends on 002, 003, 005
+    │       (NO dependency on 004a/004b — can start while DB work continues)
+    │
+    │   CRUISE-006b (Table/Column Handlers) ◄── depends on 004b, 005, 006a
+    │       (merges both paths: auth router + DB layer)
+    │
     ├── CRUISE-007 (E2E Test Setup)
     ├── CRUISE-009 (Lint CI)
     └── CRUISE-010 (Dep Review CI)
 
-CRUISE-006a (Auth Handlers + Router Setup) ← depends on 002, 003, 005
-CRUISE-006b (Table/Column Handlers) ← depends on 004b, 005, 006a
 CRUISE-008 (E2E Test Specs) ← depends on 006b, 007
 CRUISE-011 (E2E CI) ← depends on 007, 008
 CRUISE-012 (Integration) ← depends on all above
