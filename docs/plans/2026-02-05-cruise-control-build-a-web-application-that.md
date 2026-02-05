@@ -750,13 +750,17 @@ git commit -m "feat: Askama templates and htmx static assets"
 - Create: `src/handlers/auth.rs`
 - Create: `src/config.rs`
 - Modify: `src/main.rs` (initial router wiring with auth routes, static serving, CSRF infrastructure)
-- Modify: `Cargo.toml` (add tower-http, cookie)
+- Modify: `Cargo.toml` (add tower-http, cookie, rand for CSRF token generation, hex for token encoding)
 
 **Step 1: Add dependencies**
 
 ```toml
 tower-http = { version = "0.6", features = ["fs"] }
+rand = "0.8"       # Runtime dependency: cryptographically random CSRF token generation
+hex = "0.4"         # Encode CSRF tokens as hex strings
 ```
+
+> `rand` is promoted from dev-dependency to a full dependency here because CSRF token generation (`rand::thread_rng().gen::<[u8; 32]>()`) is a runtime requirement for every authenticated session, not just tests. The CSRF token store uses `Arc<RwLock<HashMap<String, String>>>` (keyed by session/user ID) shared via Axum state — no additional crate needed.
 
 **Step 2: Create config.rs** - Read PORT, DB_PATH, PUBLIC_KEY_PATH, PRIVATE_KEY_PATH from env vars with defaults.
 
@@ -1508,7 +1512,7 @@ CRUISE-012 (Integration) ← depends on all above
     {
       "id": "CRUISE-006a",
       "subject": "Auth Handlers, Config, and Router Setup",
-      "description": "Create auth HTTP handlers (login page, login POST with cookie and CSRF token, logout, dashboard), config.rs for env-based configuration, and initial main.rs router wiring: protected dashboard route behind auth middleware, public routes (login, JWKS, health), static file serving via tower-http ServeDir, and CSRF validation middleware infrastructure. Add tower-http dependency.",
+      "description": "Create auth HTTP handlers (login page, login POST with cookie and CSRF token, logout, dashboard), config.rs for env-based configuration, and initial main.rs router wiring: protected dashboard route behind auth middleware, public routes (login, JWKS, health), static file serving via tower-http ServeDir, and CSRF validation middleware infrastructure. Add tower-http, rand (runtime CSRF token generation), and hex dependencies.",
       "blocked_by": ["CRUISE-002", "CRUISE-003", "CRUISE-005"],
       "complexity": "high",
       "acceptance_criteria": [
@@ -1519,7 +1523,7 @@ CRUISE-012 (Integration) ← depends on all above
         "GET /static/* serves static files",
         "CSRF token generated per session and validated on all state-changing (POST/PUT/DELETE) protected endpoints via X-CSRF-Token header",
         "CSRF token embedded in base template via meta tag and attached to all htmx requests via hx-headers attribute on body or htmx:configRequest global event listener",
-        "Missing or invalid CSRF token returns 403 Forbidden",
+        "Missing or invalid CSRF token returns 403 Forbidden (constant-time comparison to prevent timing attacks)",
         "Router is structured so table/column routes can be added in CRUISE-006b",
         "cargo build succeeds"
       ],
