@@ -97,7 +97,7 @@ The application is a web-based SQLite database editor. Users authenticate via JW
 7. **Super-linter configuration**: May flag Rust code style differently than `cargo clippy`. Need to configure linter rules to avoid false positives.
 8. **Askama template compile-time errors**: Templates must be syntactically correct before integration - errors fail the entire build.
 9. **CI build times**: Rust compilation is slow - cargo cache action is critical for acceptable CI performance.
-10. **openssl dependency**: Required for key generation/JWKS parsing - must be available in CI runner (ubuntu-latest includes it).
+10. **openssl dependency**: Required for key generation scripts only (not for JWKS parsing at runtime). JWKS component extraction uses the `rsa` crate at server startup, eliminating the runtime dependency on the `openssl` CLI.
 
 ---
 
@@ -235,7 +235,7 @@ git commit -m "feat: project scaffolding with .gitignore and minimal Axum server
 - Create: `src/auth/mod.rs`
 - Create: `src/auth/jwt.rs`
 - Create: `src/auth/jwks.rs`
-- Modify: `Cargo.toml` (add jsonwebtoken, serde, serde_json, base64, chrono)
+- Modify: `Cargo.toml` (add jsonwebtoken, serde, serde_json, base64, rsa, chrono)
 - Modify: `src/main.rs` (add JWKS route)
 
 **Step 1: Create key generation script**
@@ -288,6 +288,7 @@ jsonwebtoken = "9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
+rsa = { version = "0.9", features = ["pem"] }
 chrono = { version = "0.4", features = ["serde"] }
 ```
 
@@ -383,7 +384,7 @@ Expected: 2 tests pass
 
 **Step 6: Create JWKS endpoint handler**
 
-Create `src/auth/jwks.rs` - parses RSA public key PEM and serves as JWK Set at `/.well-known/jwks.json`. Use openssl CLI to extract modulus and exponent, encode as base64url. See full implementation in directory structure section.
+Create `src/auth/jwks.rs` - parses RSA public key PEM and serves as JWK Set at `/.well-known/jwks.json`. Use the `rsa` crate to parse the PEM and extract modulus (n) and exponent (e) components at server startup, then cache the pre-computed JWKS response as application state. Encode components as base64url. This avoids shelling out to `openssl` CLI on each request. See full implementation in directory structure section.
 
 **Step 7: Create auth/mod.rs**
 
@@ -395,7 +396,7 @@ pub mod middleware;
 
 **Step 8: Wire JWKS into main.rs**
 
-Add `/.well-known/jwks.json` route pointing to `auth::jwks::jwks_handler` with public PEM as state.
+Add `/.well-known/jwks.json` route pointing to `auth::jwks::jwks_handler`. At startup, use the `rsa` crate to parse the public PEM and pre-compute the JWKS JSON response (extracting modulus and exponent), storing it as shared application state so the handler simply returns the cached response.
 
 **Step 9: Commit**
 
@@ -1081,7 +1082,7 @@ CRUISE-012 (Integration) ← depends on all above
     {
       "id": "CRUISE-002",
       "subject": "JWT Key Generation and JWKS Endpoint",
-      "description": "Create RSA key generation script (scripts/generate-keys.sh using openssl) that generates a private key, public key, and self-signed X.509 certificate (local JWT CA). Create JWT validation module (src/auth/jwt.rs with RS256 support), and JWKS endpoint handler (src/auth/jwks.rs) that serves public key at /.well-known/jwks.json. Add jsonwebtoken, serde, serde_json, base64, chrono crate dependencies. Include unit tests for token validation (valid token, expired token).",
+      "description": "Create RSA key generation script (scripts/generate-keys.sh using openssl) that generates a private key, public key, and self-signed X.509 certificate (local JWT CA). Create JWT validation module (src/auth/jwt.rs with RS256 support), and JWKS endpoint handler (src/auth/jwks.rs) that serves public key at /.well-known/jwks.json. Use the `rsa` crate to parse PEM and extract JWKS components (modulus, exponent) at server startup, pre-computing the JWKS response. Add jsonwebtoken, serde, serde_json, base64, rsa, chrono crate dependencies. Include unit tests for token validation (valid token, expired token).",
       "blocked_by": ["CRUISE-001"],
       "complexity": "high",
       "acceptance_criteria": [
@@ -1293,7 +1294,7 @@ CRUISE-012 (Integration) ← depends on all above
     "Super-linter may have different Rust edition expectations - need to configure RUST_EDITION or accept some false positives",
     "Askama template compile-time errors will fail the entire build - templates must be syntactically correct before integration",
     "CI build times may be slow due to Rust compilation - cargo cache action is critical for acceptable CI performance",
-    "openssl dependency for key generation and JWKS parsing - must be available in CI runner (ubuntu-latest includes it)"
+    "openssl dependency for key generation scripts only (not runtime JWKS parsing) - must be available in CI runner (ubuntu-latest includes it). JWKS parsing uses the `rsa` crate at startup."
   ]
 }
 ```
