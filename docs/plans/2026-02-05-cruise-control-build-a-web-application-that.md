@@ -247,40 +247,45 @@ set -euo pipefail
 CERT_DIR="${1:-certs}"
 mkdir -p "$CERT_DIR"
 
-# Generate RSA 2048-bit private key
+# Generate RSA 2048-bit private key (local JWT CA private key)
 openssl genrsa -out "$CERT_DIR/private.pem" 2048
 
 # Extract public key
 openssl rsa -in "$CERT_DIR/private.pem" -pubout -out "$CERT_DIR/public.pem"
 
-# Generate self-signed X.509 certificate (local JWT CA)
+# Generate self-signed X.509 CA certificate (local JWT CA)
+# The certificate includes CA:TRUE basic constraint to properly identify it
+# as a certificate authority. The server extracts the public key from this
+# certificate at startup for JWT token verification.
 openssl req -new -x509 -key "$CERT_DIR/private.pem" \
   -out "$CERT_DIR/cert.pem" -days 365 \
-  -subj "/CN=LocalJWTCA/O=Development"
+  -subj "/CN=LocalJWTCA/O=Development" \
+  -addext "basicConstraints=critical,CA:TRUE" \
+  -addext "keyUsage=critical,digitalSignature,keyCertSign"
 
 echo "Keys and certificate generated in $CERT_DIR/"
-echo "  private.pem - KEEP SECRET, used to sign JWT tokens"
-echo "  public.pem  - Safe to distribute, used to verify JWT tokens"
-echo "  cert.pem    - Self-signed X.509 certificate for local JWT CA"
+echo "  private.pem - KEEP SECRET, local JWT CA private key used to sign JWT tokens"
+echo "  public.pem  - RSA public key (can verify JWT tokens directly)"
+echo "  cert.pem    - Self-signed X.509 CA certificate (local JWT CA, used by server for verification)"
 ```
 
 **Step 2: Create certs/README.md**
 
 ```markdown
-# JWT Signing Keys
+# Local JWT CA
 
-Run `../scripts/generate-keys.sh` to generate keys and certificate.
-Keys and certificate are .gitignored and must be generated locally.
+Run `../scripts/generate-keys.sh` to generate the local JWT CA key pair and certificate.
+These files are .gitignored and must be generated locally per environment.
 
 Generated files:
 - `private.pem` - RSA private key (keep secret, used to sign JWTs)
-- `public.pem` - RSA public key (used to verify JWTs)
-- `cert.pem` - Self-signed X.509 certificate (local JWT CA)
+- `public.pem` - RSA public key (can verify JWTs directly)
+- `cert.pem` - Self-signed X.509 CA certificate (local JWT CA; server extracts public key from this at startup)
 ```
 
 **Step 3: Add dependencies to Cargo.toml**
 
-The `x509-cert` and `pem` crates are required to extract the RSA public key from the self-signed X.509 certificate (`cert.pem`) at server startup. The extraction happens once and the result is cached in application state — no certificate parsing occurs on the request path. The `rcgen` dev-dependency generates ephemeral certificates for unit tests.
+The `x509-cert` and `pem` crates are required to extract the RSA public key from the self-signed X.509 CA certificate (`cert.pem`) at server startup. The extraction happens once and the result is cached in application state — no certificate parsing occurs on the request path. The `rcgen` dev-dependency generates ephemeral self-signed CA certificates for unit tests.
 
 ```toml
 [dependencies]
@@ -300,7 +305,7 @@ rand = "0.8"
 rcgen = "0.13"  # Generate ephemeral self-signed certificates in tests
 ```
 
-Note: The `generate-keys.sh` script (Step 1) produces three artifacts: `private.pem` (RSA private key), `public.pem` (RSA public key), and `cert.pem` (self-signed X.509 certificate). The certificate satisfies the local JWT CA requirement — at server startup, the public key is extracted from `cert.pem` once using the `x509-cert` crate and cached in application state for efficient per-request token validation.
+Note: The `generate-keys.sh` script (Step 1) produces three artifacts: `private.pem` (RSA private key), `public.pem` (RSA public key), and `cert.pem` (self-signed X.509 CA certificate with `CA:TRUE` basic constraint). Together, the private key and certificate constitute the local JWT CA. At server startup, the public key is extracted from `cert.pem` once using the `x509-cert` crate and cached in application state for efficient per-request token validation.
 
 **Step 4: Write JWT validation module with tests**
 
@@ -1413,7 +1418,7 @@ CRUISE-012 (Integration) ← depends on all above
       "blocked_by": ["CRUISE-001"],
       "complexity": "high",
       "acceptance_criteria": [
-        "scripts/generate-keys.sh generates RSA 2048-bit key pair and self-signed X.509 certificate",
+        "scripts/generate-keys.sh generates RSA 2048-bit key pair and self-signed X.509 CA certificate (with CA:TRUE basic constraint)",
         "JWT validation works with RS256 algorithm",
         "Unit test: valid token accepted",
         "Unit test: expired token rejected",
