@@ -1189,17 +1189,29 @@ jobs:
 
 > **Clarification: "Push test results to the repository for validation on the PR"**
 >
-> **Important distinction:** GitHub Actions artifacts are stored externally (in GitHub's artifact storage), not committed to the repository itself. They are accessible from the PR's workflow run page but are not part of the git history or branch contents. Artifacts alone do **not** satisfy a literal "in the repository" requirement.
+> **Direct answer: No, GitHub Actions artifacts alone do not meet a literal "in the repository" requirement.** Artifacts are stored in GitHub's external artifact storage — they are accessible from the workflow run page but are not committed to the git repository or the PR's branch. They are not part of git history.
 >
-> **Chosen approach:** We interpret "push test results for validation on the PR" as meaning **test results must be visible and actionable directly on the PR** — not that raw result files must be committed to a branch. We achieve this through three complementary mechanisms:
+> **However, artifacts are only the supplementary mechanism here, not the primary one.** We interpret "push test results for validation on the PR" as meaning **test results must be visible and actionable directly on the PR** — not that raw result files must be committed to a branch. The plan achieves this through three complementary mechanisms:
 >
-> 1. **PR comment summary (primary visibility)** — the `playwright-report-summary` action posts a pass/fail summary with test counts directly as a PR comment. This is the main way reviewers validate test results without leaving the PR page.
-> 2. **GitHub Actions check status** — the workflow run reports pass/fail on the PR's Checks tab, blocking merge on failure when branch protection rules are configured. This enforces validation gating.
-> 3. **GitHub Actions artifacts (supplementary)** — full Playwright HTML report and raw test-results uploaded with 30-day retention, downloadable from the workflow run summary. These provide drill-down detail but are stored externally, not in the repository.
+> 1. **PR comment summary (primary visibility)** — the `playwright-report-summary` action posts a pass/fail summary with test counts directly as a PR comment. This makes results immediately visible to reviewers on the PR page itself, which is the strongest form of "validation on the PR."
+> 2. **GitHub Actions check status (validation gating)** — the workflow run reports pass/fail on the PR's Checks tab, blocking merge on failure when branch protection rules are configured. This enforces automated validation gating on the PR.
+> 3. **GitHub Actions artifacts (supplementary detail)** — full Playwright HTML report and raw test-results uploaded with 30-day retention, downloadable from the workflow run summary. These provide drill-down detail for debugging but are stored externally, not in the repository.
 >
 > **Rationale:** Committing generated test result files to the branch is explicitly avoided because it pollutes git history with transient artifacts, creates merge conflicts, and is not standard CI/CD practice. The PR comment + check status approach provides stronger validation (automated gating + human-readable summary) than committed files would.
 >
-> **If literal in-repository storage is later required:** The CI workflow can be extended to commit a `test-results/summary.json` to the PR's source branch after test execution (requires `contents: write` permission and a `git push` step). This is not recommended but is a viable fallback.
+> **If literal in-repository storage is required:** The CI workflow can be extended to commit a `test-results/summary.json` to the PR's source branch after test execution. This would require adding `contents: write` permission and a `git push` step to the workflow. This is not recommended but is a viable fallback — the implementation steps would be:
+> ```yaml
+>     - name: Commit test results to branch
+>       if: always() && github.event_name == 'pull_request'
+>       run: |
+>         git config user.name "github-actions[bot]"
+>         git config user.email "github-actions[bot]@users.noreply.github.com"
+>         cp tests/e2e/test-results/.last-run.json test-results/summary.json
+>         git add test-results/summary.json
+>         git diff --cached --quiet || git commit -m "ci: update test results [skip ci]"
+>         git push
+> ```
+> This option is explicitly deferred unless stakeholders confirm that literal in-repository storage is a hard requirement.
 
 **Step 2: Commit**
 
