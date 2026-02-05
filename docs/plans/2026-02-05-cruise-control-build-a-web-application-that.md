@@ -1276,9 +1276,11 @@ CRUISE-001 (Scaffolding + .gitignore)
     │        └── CRUISE-003 (Auth MW)      │
     │                                      │
     ├─── DB Path ──────────────────────┐   │
-    │    CRUISE-004a (Connection +     │   │
-    │                 Queries)         │   │
-    │        └── CRUISE-004b (DDL Ops) │   │
+    │    CRUISE-004a (Connection +     │   │  ← SPAWN-003a (medium complexity)
+    │                 Queries)         │   │    Read-only PRAGMAs, no injection surface
+    │        └── CRUISE-004b (DDL +    │   │  ← SPAWN-003b (high complexity)
+    │              Identifier          │   │    Security-sensitive: SQL injection prevention
+    │              Validation)         │   │    Runs parallel with Auth Path while 004a done
     │                                  │   │
     ├─── CRUISE-005 (Templates + htmx) ┤   │
     │                                  │   │
@@ -1305,7 +1307,10 @@ CRUISE-012 (Integration) ← depends on all above
 
 **Parallelization opportunities after CRUISE-001:**
 - CRUISE-002+003, CRUISE-004a, CRUISE-005, CRUISE-007, CRUISE-009, CRUISE-010 can all run in parallel.
-- CRUISE-004b can start as soon as CRUISE-004a completes. The original monolithic CRUISE-004 task was split (per reviewer feedback) because it covered connection pooling, DDL operations, and query helpers — too large for effective parallel execution or focused review. The two subtasks are assigned to separate spawn instances (SPAWN-003a and SPAWN-003b) so the security-sensitive DDL operations and identifier validation in CRUISE-004b can be developed and reviewed independently from the basic connection/query logic in CRUISE-004a. This split reflects a deliberate security boundary: 004a has no SQL injection surface (read-only PRAGMAs), while 004b constructs DDL from user input and requires strict identifier validation — isolating this code enables focused security review of the injection prevention logic without the distraction of connection pool boilerplate.
+- **CRUISE-004a/004b split enables parallel execution and focused security review:** The original monolithic CRUISE-004 task was split (per reviewer feedback) because it covered connection pooling, DDL operations, and query helpers — too large for effective parallel execution or focused review. The split provides three concrete benefits:
+  1. **Faster critical path:** CRUISE-004a (connection pool + read-only queries) is medium complexity and completes quickly in SPAWN-003a, unblocking CRUISE-004b sooner. Meanwhile, the Auth Path (002→003) and Templates (005) execute in parallel — so by the time 004a finishes, 004b can start in SPAWN-003b while auth work continues independently.
+  2. **Parallel development with Auth Path:** CRUISE-004b (DDL operations) runs in SPAWN-003b concurrently with CRUISE-006a (Auth Handlers) in SPAWN-005a, since 006a has no dependency on the DB layer. This means security-sensitive DDL code and auth handler code are developed simultaneously by separate spawn instances.
+  3. **Focused security review:** The security boundary is clean — 004a has zero SQL injection surface (read-only PRAGMAs only), while 004b dynamically constructs DDL from user-provided identifiers, requiring strict validation (alphanumeric + underscore only, reserved word rejection, column type whitelisting). Isolating the injection-prevention code in its own task enables reviewers to audit it without wading through connection pool boilerplate, reducing cognitive load and ensuring the security-critical logic gets the scrutiny it deserves.
 - **Critical path optimization via 006a/006b split:** CRUISE-006a (Auth Handlers + Router Setup) depends only on 002, 003, and 005 — it does NOT depend on the Database Layer (004a/004b). This means auth handler development can proceed in parallel with database layer work, rather than being blocked by it. CRUISE-006b (Table/Column Handlers) is the only task that needs both the DB layer and the router setup. This split removes the original CRUISE-006 as a dependency-graph bottleneck and shortens the overall critical path. Each subtask runs in its own spawn instance (SPAWN-005a and SPAWN-005b) so they can execute in separate processes as soon as their respective dependencies are satisfied.
 - **Auth E2E tests unblocked earlier:** Because CRUISE-008a depends on CRUISE-006a (not 006b), auth E2E tests can begin as soon as the auth handlers and router are wired, without waiting for the table/column handlers or the full DB layer. This further reduces idle time on the critical path.
 
