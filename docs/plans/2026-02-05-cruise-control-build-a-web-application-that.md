@@ -520,7 +520,7 @@ pub mod middleware;
 
 **Step 8: Wire JWKS into main.rs**
 
-At startup, call `auth::jwks::build_jwks_from_pem(&public_pem)` to parse the PEM and pre-compute the JWKS JSON using the `rsa` crate. Store the result in `JwksState` as shared application state. Add `/.well-known/jwks.json` route pointing to `auth::jwks::jwks_handler`, which simply returns the cached response with zero per-request overhead.
+At startup, call `auth::jwks::build_jwks_from_pem(&public_pem)` to parse the PEM and pre-compute the JWKS JSON using the `rsa` crate. Store the result in `JwksState` as shared application state. Add `/.well-known/jwks.json` route pointing to `auth::jwks::jwks_handler`, which simply returns the cached response with zero per-request overhead. Note: when the authentication cookie is set later (in CRUISE-006a), it must include the `Secure` flag (HTTPS-only transmission) in addition to `HttpOnly` and `SameSite=Strict` to ensure the token is never sent over plaintext connections.
 
 **Step 9: Commit**
 
