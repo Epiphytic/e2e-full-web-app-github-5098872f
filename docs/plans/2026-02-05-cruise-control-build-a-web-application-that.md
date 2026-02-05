@@ -462,7 +462,53 @@ Expected: 3 tests pass (valid token, certificate-based validation, expired token
 
 **Step 6: Create JWKS endpoint handler**
 
-Create `src/auth/jwks.rs` - parses RSA public key PEM and serves as JWK Set at `/.well-known/jwks.json`. Use the `rsa` crate to parse the PEM and extract modulus (n) and exponent (e) components at server startup, then cache the pre-computed JWKS response as application state. Encode components as base64url. This avoids shelling out to `openssl` CLI on each request. See full implementation in directory structure section.
+Create `src/auth/jwks.rs` - uses the `rsa` crate to parse the RSA public key PEM and extract modulus (n) and exponent (e) components **at server startup**. The pre-computed JWKS JSON is cached as shared application state so the handler simply returns it without any per-request parsing. This avoids shelling out to any CLI tool (e.g., `openssl`) at runtime.
+
+```rust
+use axum::{extract::State, http::StatusCode, response::Json};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use rsa::pkcs8::DecodePublicKey;
+use rsa::RsaPublicKey;
+use serde_json::{json, Value};
+use std::sync::Arc;
+
+/// Pre-computed JWKS response, built once at startup
+#[derive(Clone)]
+pub struct JwksState {
+    pub jwks_json: Arc<Value>,
+}
+
+/// Build the JWKS JSON from a PEM-encoded RSA public key at startup.
+/// Uses the `rsa` crate to parse the PEM and extract modulus/exponent —
+/// no CLI tools or subprocess calls are involved.
+pub fn build_jwks_from_pem(public_key_pem: &[u8]) -> Result<Value, Box<dyn std::error::Error>> {
+    let pem_str = std::str::from_utf8(public_key_pem)?;
+    let public_key = RsaPublicKey::from_public_key_pem(pem_str)?;
+
+    let n = public_key.n().to_bytes_be();
+    let e = public_key.e().to_bytes_be();
+
+    let n_b64 = URL_SAFE_NO_PAD.encode(&n);
+    let e_b64 = URL_SAFE_NO_PAD.encode(&e);
+
+    Ok(json!({
+        "keys": [{
+            "kty": "RSA",
+            "alg": "RS256",
+            "use": "sig",
+            "n": n_b64,
+            "e": e_b64
+        }]
+    }))
+}
+
+/// Handler returns the pre-computed JWKS JSON (no per-request computation)
+pub async fn jwks_handler(
+    State(state): State<JwksState>,
+) -> Result<Json<Value>, StatusCode> {
+    Ok(Json((*state.jwks_json).clone()))
+}
+```
 
 **Step 7: Create auth/mod.rs**
 
@@ -474,7 +520,7 @@ pub mod middleware;
 
 **Step 8: Wire JWKS into main.rs**
 
-Add `/.well-known/jwks.json` route pointing to `auth::jwks::jwks_handler`. At startup, use the `rsa` crate to parse the public PEM and pre-compute the JWKS JSON response (extracting modulus and exponent), storing it as shared application state so the handler simply returns the cached response.
+At startup, call `auth::jwks::build_jwks_from_pem(&public_pem)` to parse the PEM and pre-compute the JWKS JSON using the `rsa` crate. Store the result in `JwksState` as shared application state. Add `/.well-known/jwks.json` route pointing to `auth::jwks::jwks_handler`, which simply returns the cached response with zero per-request overhead.
 
 **Step 9: Commit**
 
