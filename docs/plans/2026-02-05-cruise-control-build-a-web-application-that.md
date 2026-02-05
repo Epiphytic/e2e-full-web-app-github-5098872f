@@ -1247,23 +1247,33 @@ git commit -m "fix: integration fixes from full E2E verification"
 
 ```
 CRUISE-001 (Scaffolding + .gitignore)
-    ├── CRUISE-002 (JWT + JWKS)
-    │       └── CRUISE-003 (Auth Middleware) ──┐
-    ├── CRUISE-004a (SQLite Connection + Queries)  │
-    │       └── CRUISE-004b (SQLite DDL Ops) ──┼── These two paths run in PARALLEL:
-    ├── CRUISE-005 (Templates + htmx) ─────────┤
-    │                                           │
-    │   CRUISE-006a (Auth Handlers + Router) ◄──┘ depends on 002, 003, 005
-    │       (NO dependency on 004a/004b — can start while DB work continues)
     │
-    │   CRUISE-006b (Table/Column Handlers) ◄── depends on 004b, 005, 006a
-    │       (merges both paths: auth router + DB layer)
+    ├─── Auth Path ────────────────────────┐
+    │    CRUISE-002 (JWT + JWKS)           │
+    │        └── CRUISE-003 (Auth MW)      │
+    │                                      │
+    ├─── DB Path ──────────────────────┐   │
+    │    CRUISE-004a (Connection +     │   │
+    │                 Queries)         │   │
+    │        └── CRUISE-004b (DDL Ops) │   │
+    │                                  │   │
+    ├─── CRUISE-005 (Templates + htmx) ┤   │
+    │                                  │   │
+    │   ┌──────────────────────────────┘   │
+    │   │                                  │
+    │   │   CRUISE-006a (Auth Handlers ◄───┘ depends on 002, 003, 005
+    │   │               + Router Setup)      (NO dependency on 004a/004b)
+    │   │       │                            Can start while DB work continues
+    │   │       │
+    │   └───►CRUISE-006b (Table/Column ◄──── depends on 004b, 005, 006a
+    │           Handlers + Full Wiring)      Merges both paths
     │
     ├── CRUISE-007 (E2E Test Setup)
     ├── CRUISE-009 (Lint CI)
     └── CRUISE-010 (Dep Review CI)
 
 CRUISE-008a (Auth E2E Tests) ← depends on 006a, 007
+    (can start before 006b is done — auth tests don't need table/column handlers)
 CRUISE-008b (Table E2E Tests) ← depends on 006b, 007
 CRUISE-008c (Column E2E Tests) ← depends on 006b, 007
 CRUISE-011 (E2E CI) ← depends on 007, 008a, 008b, 008c
@@ -1274,6 +1284,7 @@ CRUISE-012 (Integration) ← depends on all above
 - CRUISE-002+003, CRUISE-004a, CRUISE-005, CRUISE-007, CRUISE-009, CRUISE-010 can all run in parallel.
 - CRUISE-004b can start as soon as CRUISE-004a completes. These are assigned to separate spawn instances (SPAWN-003a and SPAWN-003b) so the security-sensitive DDL operations and identifier validation in CRUISE-004b can be reviewed independently from the basic connection/query logic in CRUISE-004a. This split reflects a deliberate security boundary: 004a has no SQL injection surface (read-only PRAGMAs), while 004b constructs DDL from user input and requires strict identifier validation — isolating this code enables focused security review of the injection prevention logic.
 - **Critical path optimization via 006a/006b split:** CRUISE-006a (Auth Handlers + Router Setup) depends only on 002, 003, and 005 — it does NOT depend on the Database Layer (004a/004b). This means auth handler development can proceed in parallel with database layer work, rather than being blocked by it. CRUISE-006b (Table/Column Handlers) is the only task that needs both the DB layer and the router setup. This split removes the original CRUISE-006 as a dependency-graph bottleneck and shortens the overall critical path.
+- **Auth E2E tests unblocked earlier:** Because CRUISE-008a depends on CRUISE-006a (not 006b), auth E2E tests can begin as soon as the auth handlers and router are wired, without waiting for the table/column handlers or the full DB layer. This further reduces idle time on the critical path.
 
 ---
 
