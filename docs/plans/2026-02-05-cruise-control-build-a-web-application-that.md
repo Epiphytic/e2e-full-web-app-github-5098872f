@@ -253,9 +253,15 @@ openssl genrsa -out "$CERT_DIR/private.pem" 2048
 # Extract public key
 openssl rsa -in "$CERT_DIR/private.pem" -pubout -out "$CERT_DIR/public.pem"
 
-echo "Keys generated in $CERT_DIR/"
+# Generate self-signed X.509 certificate (local JWT CA)
+openssl req -new -x509 -key "$CERT_DIR/private.pem" \
+  -out "$CERT_DIR/cert.pem" -days 365 \
+  -subj "/CN=LocalJWTCA/O=Development"
+
+echo "Keys and certificate generated in $CERT_DIR/"
 echo "  private.pem - KEEP SECRET, used to sign JWT tokens"
 echo "  public.pem  - Safe to distribute, used to verify JWT tokens"
+echo "  cert.pem    - Self-signed X.509 certificate for local JWT CA"
 ```
 
 **Step 2: Create certs/README.md**
@@ -263,8 +269,13 @@ echo "  public.pem  - Safe to distribute, used to verify JWT tokens"
 ```markdown
 # JWT Signing Keys
 
-Run `../scripts/generate-keys.sh` to generate keys.
-Keys are .gitignored and must be generated locally.
+Run `../scripts/generate-keys.sh` to generate keys and certificate.
+Keys and certificate are .gitignored and must be generated locally.
+
+Generated files:
+- `private.pem` - RSA private key (keep secret, used to sign JWTs)
+- `public.pem` - RSA public key (used to verify JWTs)
+- `cert.pem` - Self-signed X.509 certificate (local JWT CA)
 ```
 
 **Step 3: Add dependencies to Cargo.toml**
@@ -1070,11 +1081,11 @@ CRUISE-012 (Integration) ← depends on all above
     {
       "id": "CRUISE-002",
       "subject": "JWT Key Generation and JWKS Endpoint",
-      "description": "Create RSA key generation script (scripts/generate-keys.sh using openssl), JWT validation module (src/auth/jwt.rs with RS256 support), and JWKS endpoint handler (src/auth/jwks.rs) that serves public key at /.well-known/jwks.json. Add jsonwebtoken, serde, serde_json, base64, chrono crate dependencies. Include unit tests for token validation (valid token, expired token).",
+      "description": "Create RSA key generation script (scripts/generate-keys.sh using openssl) that generates a private key, public key, and self-signed X.509 certificate (local JWT CA). Create JWT validation module (src/auth/jwt.rs with RS256 support), and JWKS endpoint handler (src/auth/jwks.rs) that serves public key at /.well-known/jwks.json. Add jsonwebtoken, serde, serde_json, base64, chrono crate dependencies. Include unit tests for token validation (valid token, expired token).",
       "blocked_by": ["CRUISE-001"],
       "complexity": "high",
       "acceptance_criteria": [
-        "scripts/generate-keys.sh generates RSA 2048-bit key pair",
+        "scripts/generate-keys.sh generates RSA 2048-bit key pair and self-signed X.509 certificate",
         "JWT validation works with RS256 algorithm",
         "Unit test: valid token accepted",
         "Unit test: expired token rejected",
