@@ -516,7 +516,7 @@ pub mod middleware;
 
 **Step 8: Wire JWKS into main.rs**
 
-At startup: (1) call `auth::jwt::extract_public_key_from_cert(&cert_pem)` to extract the RSA public key PEM from the X.509 certificate once, then store the extracted PEM in `AuthState` for use by the auth middleware; (2) call `auth::jwks::build_jwks_from_pem(&public_pem)` to pre-compute the JWKS JSON using the `rsa` crate and store the result in `JwksState`. Both operations happen once at startup — no certificate or key parsing occurs on the request path. Add `/.well-known/jwks.json` route pointing to `auth::jwks::jwks_handler`, which simply returns the cached response with zero per-request overhead. Note: when the authentication cookie is set later (in CRUISE-006a), it must include the `Secure` flag (HTTPS-only transmission) in addition to `HttpOnly` and `SameSite=Strict` to ensure the token is never sent over plaintext connections.
+At startup: (1) call `auth::jwt::extract_public_key_from_cert(&cert_pem)` to extract the RSA public key PEM from the X.509 certificate once, then store the extracted PEM in `AuthState` for use by the auth middleware; (2) call `auth::jwks::build_jwks_from_pem(&public_pem)` to pre-compute the JWKS JSON using the `rsa` crate and store the result in `JwksState`. Both operations happen once at startup — no certificate or key parsing occurs on the request path. Add `/.well-known/jwks.json` route pointing to `auth::jwks::jwks_handler`, which simply returns the cached response with zero per-request overhead. Note: when the authentication cookie is set later (in CRUISE-006a), it must include the `Secure` flag (HTTPS-only transmission) in addition to `HttpOnly` and `SameSite=Strict` to ensure the token is never sent over plaintext connections. **Important:** these cookie attributes are defense-in-depth only — they are NOT sufficient as the sole CSRF protection for destructive DDL operations. The primary CSRF defense (explicit per-session CSRF tokens validated via `X-CSRF-Token` header on all state-changing endpoints) is implemented in CRUISE-006a.
 
 **Step 9: Commit**
 
@@ -541,6 +541,8 @@ git commit -m "feat: JWT validation and JWKS .well-known endpoint"
 3. Validates token using `validate_token`
 4. Injects `Claims` into request extensions
 5. Returns 401 if no valid token found
+
+**Note:** This middleware handles authentication (identity verification) only. CSRF protection is a separate concern implemented in CRUISE-006a via explicit per-session CSRF tokens validated on all state-changing endpoints (POST/PUT/DELETE) through the `X-CSRF-Token` header. The `SameSite=Strict` cookie attribute set on the JWT session cookie is defense-in-depth only and must NOT be relied upon as the sole CSRF protection, especially given this application performs destructive DDL operations (DROP TABLE, DROP COLUMN). See CRUISE-006a Step 5 for the full CSRF validation middleware specification.
 
 ```rust
 use axum::{
@@ -1423,7 +1425,8 @@ CRUISE-012 (Integration) ← depends on all above
         "Middleware extracts token from cookie named 'token'",
         "Valid token: Claims injected into request extensions",
         "Invalid/missing token: 401 Unauthorized returned",
-        "Code compiles successfully"
+        "Code compiles successfully",
+        "NOTE: This middleware handles authentication only. CSRF protection (explicit per-session tokens via X-CSRF-Token header, validated on all POST/PUT/DELETE endpoints) is implemented separately in CRUISE-006a. SameSite=Strict cookies are defense-in-depth only, not sufficient CSRF protection for destructive DDL operations."
       ],
       "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
       "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 600",
