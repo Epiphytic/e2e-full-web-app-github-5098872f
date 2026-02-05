@@ -1293,7 +1293,7 @@ CRUISE-001 (Scaffolding + .gitignore)
     │   └───►CRUISE-006b (Table/Column ◄──── depends on 004b, 005, 006a
     │           Handlers + Full Wiring)      Merges both paths
     │
-    ├── CRUISE-007 (E2E Test Setup)
+    ├── CRUISE-007 (E2E Test Setup) ◄──── depends on 002 (uses scripts/generate-keys.sh)
     ├── CRUISE-009 (Lint CI)
     └── CRUISE-010 (Dep Review CI)
 
@@ -1306,7 +1306,7 @@ CRUISE-012 (Integration) ← depends on all above
 ```
 
 **Parallelization opportunities after CRUISE-001:**
-- CRUISE-002+003, CRUISE-004a, CRUISE-005, CRUISE-007, CRUISE-009, CRUISE-010 can all run in parallel.
+- CRUISE-002+003, CRUISE-004a, CRUISE-005, CRUISE-009, CRUISE-010 can all run in parallel. CRUISE-007 runs after CRUISE-002 completes (depends on `scripts/generate-keys.sh` created in CRUISE-002 for E2E test key generation).
 - **CRUISE-004a/004b split enables parallel execution and focused security review:** The original monolithic CRUISE-004 task was split (per reviewer feedback) because it covered connection pooling, DDL operations, and query helpers — too large for effective parallel execution or focused review. The split provides three concrete benefits:
   1. **Faster critical path:** CRUISE-004a (connection pool + read-only queries) is medium complexity and completes quickly in SPAWN-003a, unblocking CRUISE-004b sooner. Meanwhile, the Auth Path (002→003) and Templates (005) execute in parallel — so by the time 004a finishes, 004b can start in SPAWN-003b while auth work continues independently.
   2. **Parallel development with Auth Path:** CRUISE-004b (DDL operations) runs in SPAWN-003b concurrently with CRUISE-006a (Auth Handlers) in SPAWN-005a, since 006a has no dependency on the DB layer. This means security-sensitive DDL code and auth handler code are developed simultaneously by separate spawn instances.
@@ -1579,7 +1579,7 @@ CRUISE-012 (Integration) ← depends on all above
       "id": "CRUISE-007",
       "subject": "Playwright E2E Test Infrastructure",
       "description": "Create tests/e2e/ with package.json (playwright + jsonwebtoken deps), playwright.config.ts (webServer pointing to cargo run, JSON and HTML reporters), tsconfig.json, JWT test helper (generates valid/expired RS256 tokens using private key via execFileSync), and run-e2e.sh script that generates keys and certificate, installs deps, runs tests.",
-      "blocked_by": ["CRUISE-001"],
+      "blocked_by": ["CRUISE-001", "CRUISE-002"],
       "complexity": "medium",
       "acceptance_criteria": [
         "package.json has @playwright/test and jsonwebtoken dependencies",
@@ -1587,7 +1587,7 @@ CRUISE-012 (Integration) ← depends on all above
         "JSON reporter outputs to test-results/results.json",
         "JWT helper generates valid RS256 tokens with configurable expiry",
         "JWT helper generates expired tokens for negative testing",
-        "run-e2e.sh generates keys and certificate, installs deps, runs tests",
+        "run-e2e.sh uses scripts/generate-keys.sh from CRUISE-002 to generate keys and certificate, installs deps, runs tests",
         "npm install succeeds in tests/e2e/"
       ],
       "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
