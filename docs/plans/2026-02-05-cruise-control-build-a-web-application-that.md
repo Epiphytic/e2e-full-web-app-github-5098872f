@@ -542,7 +542,7 @@ git commit -m "feat: JWT validation and JWKS .well-known endpoint"
 4. Injects `Claims` into request extensions
 5. Returns 401 if no valid token found
 
-**Note:** This middleware handles authentication (identity verification) only. CSRF protection is a separate concern implemented in CRUISE-006a via explicit per-session CSRF tokens validated on all state-changing endpoints (POST/PUT/DELETE) through the `X-CSRF-Token` header. The `SameSite=Strict` cookie attribute set on the JWT session cookie is defense-in-depth only and must NOT be relied upon as the sole CSRF protection, especially given this application performs destructive DDL operations (DROP TABLE, DROP COLUMN). See CRUISE-006a Step 5 for the full CSRF validation middleware specification.
+**Note:** This middleware handles authentication (identity verification) only. CSRF protection is a separate concern implemented in CRUISE-006a via explicit per-session CSRF tokens validated on all state-changing endpoints (POST/PUT/DELETE) through the `X-CSRF-Token` header. The `Secure`, `HttpOnly`, and `SameSite=Strict` cookie attributes set on the JWT session cookie are defense-in-depth only and must NOT be relied upon as the sole CSRF protection, especially given this application performs destructive DDL operations (DROP TABLE, DROP COLUMN). See CRUISE-006a Step 5 for the full CSRF validation middleware specification.
 
 ```rust
 use axum::{
@@ -1434,7 +1434,7 @@ CRUISE-012 (Integration) ← depends on all above
         "Valid token: Claims injected into request extensions",
         "Invalid/missing token: 401 Unauthorized returned",
         "Code compiles successfully",
-        "NOTE: This middleware handles authentication only. CSRF protection (explicit per-session tokens via X-CSRF-Token header, validated on all POST/PUT/DELETE endpoints) is implemented separately in CRUISE-006a. SameSite=Strict cookies are defense-in-depth only, not sufficient CSRF protection for destructive DDL operations."
+        "NOTE: This middleware handles authentication only. CSRF protection (explicit per-session tokens via X-CSRF-Token header, validated on all POST/PUT/DELETE endpoints) is implemented separately in CRUISE-006a. Secure HttpOnly SameSite=Strict cookies are defense-in-depth only, not sufficient CSRF protection for destructive DDL operations."
       ],
       "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
       "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 600",
