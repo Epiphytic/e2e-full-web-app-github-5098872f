@@ -91,7 +91,7 @@ The application is a web-based SQLite database editor. Users authenticate via JW
 1. **rusqlite + async**: rusqlite is synchronous. Every DB call must be wrapped in `spawn_blocking`. Forgetting this blocks the tokio runtime.
 2. **ALTER TABLE limitations in SQLite**: SQLite doesn't support `DROP COLUMN` before version 3.35.0. Must ensure the bundled SQLite version supports it, or use the `bundled` feature of rusqlite.
 3. **JWT key management**: Private keys must never be committed. The `.gitignore` must exclude `*.pem`, `*.key` files. Test keys should be generated dynamically.
-4. **htmx CSRF**: htmx sends AJAX requests that bypass traditional CSRF protections. Must rely on SameSite=Strict cookies and same-origin checks.
+4. **htmx CSRF**: htmx sends AJAX requests that bypass traditional CSRF protections. SameSite=Strict cookies alone are not sufficient for destructive DDL operations. Must implement explicit CSRF tokens: generate a per-session token server-side, embed it in templates via a `<meta>` tag, and configure htmx globally with `hx-headers='{"X-CSRF-Token": "..."}'` (or use `document.body.addEventListener("htmx:configRequest", ...)` to attach the token to every request). The server must validate the `X-CSRF-Token` header on all state-changing endpoints.
 5. **SQL injection via table/column names**: Since we're building DDL dynamically, table and column names must be strictly validated (alphanumeric + underscore only) to prevent SQL injection.
 6. **Playwright test flakiness**: Server startup race condition. Tests must wait for server health check before running.
 7. **Super-linter configuration**: May flag Rust code style differently than `cargo clippy`. Need to configure linter rules to avoid false positives.
@@ -562,7 +562,7 @@ askama_axum = "0.4"
 
 Run: `mkdir -p static && curl -o static/htmx.min.js https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js`
 
-**Step 3: Create base template** - HTML layout with htmx script, basic CSS, nav structure.
+**Step 3: Create base template** - HTML layout with htmx script, basic CSS, nav structure. Include a `<meta name="csrf-token" content="{{ csrf_token }}">` tag and a script block that configures htmx to attach the CSRF token to all requests via `document.body.addEventListener("htmx:configRequest", function(evt) { evt.detail.headers["X-CSRF-Token"] = document.querySelector('meta[name="csrf-token"]').content; });`.
 
 **Step 4: Create login template** - Extends base, token input form, optional error message.
 
@@ -604,9 +604,9 @@ tower-http = { version = "0.6", features = ["fs"] }
 
 `src/handlers/auth.rs`:
 - `login_page()` - renders login.html template
-- `login_submit(Form<LoginForm>)` - validates JWT, sets HttpOnly SameSite=Strict cookie, redirects to /
-- `logout()` - clears cookie, redirects to /login
-- `dashboard(Request)` - extracts Claims from extensions, renders dashboard.html
+- `login_submit(Form<LoginForm>)` - validates JWT, sets HttpOnly SameSite=Strict cookie, generates a per-session CSRF token (random 32-byte hex string stored server-side keyed to the session), sets it as a second cookie or embeds it in the redirect response, redirects to /
+- `logout()` - clears cookie and CSRF token, redirects to /login
+- `dashboard(Request)` - extracts Claims from extensions, renders dashboard.html with CSRF token embedded in a `<meta name="csrf-token">` tag for htmx to read
 
 **Step 4: Create table handlers**
 
@@ -625,9 +625,11 @@ tower-http = { version = "0.6", features = ["fs"] }
 **Step 6: Wire main.rs**
 
 Routes:
-- Protected (behind auth middleware): `GET /`, `GET /tables`, `POST /tables`, `DELETE /tables/{name}`, `GET /tables/{name}`, `POST /tables/{name}/columns`, `DELETE /tables/{name}/columns/{col}`
+- Protected (behind auth middleware + CSRF validation middleware on state-changing methods): `GET /`, `GET /tables`, `POST /tables`, `DELETE /tables/{name}`, `GET /tables/{name}`, `POST /tables/{name}/columns`, `DELETE /tables/{name}/columns/{col}`
 - Public: `GET /login`, `POST /login`, `GET /logout`, `GET /healthz`, `GET /.well-known/jwks.json`
 - Static: `GET /static/*` via ServeDir
+
+CSRF validation middleware: For POST, PUT, DELETE requests on protected routes, extract the `X-CSRF-Token` header and validate it against the server-side session token. Return 403 Forbidden if the token is missing or invalid. Store CSRF tokens in a concurrent HashMap keyed by session/user identifier.
 
 **Step 7: Build and verify**
 
@@ -1160,7 +1162,7 @@ CRUISE-012 (Integration) ← depends on all above
       "complexity": "high",
       "acceptance_criteria": [
         "Login page renders at GET /login",
-        "POST /login validates JWT and sets HttpOnly SameSite=Strict cookie",
+        "POST /login validates JWT, sets HttpOnly SameSite=Strict cookie, and generates a per-session CSRF token",
         "GET /logout clears cookie and redirects to /login",
         "GET / shows dashboard (protected)",
         "GET /tables returns table list partial (protected)",
@@ -1170,6 +1172,9 @@ CRUISE-012 (Integration) ← depends on all above
         "POST /tables/{name}/columns adds column (protected)",
         "DELETE /tables/{name}/columns/{col} drops column (protected)",
         "GET /static/* serves static files",
+        "CSRF token generated per session and validated on all state-changing (POST/PUT/DELETE) protected endpoints via X-CSRF-Token header",
+        "CSRF token embedded in base template via meta tag and attached to htmx requests via htmx:configRequest event listener",
+        "Missing or invalid CSRF token returns 403 Forbidden",
         "cargo build succeeds"
       ],
       "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
@@ -1290,7 +1295,7 @@ CRUISE-012 (Integration) ← depends on all above
     "SQL injection via dynamically-constructed DDL statements - table/column names must be strictly validated (no quoting, only alphanumeric + underscore)",
     "JWT private key leakage - .gitignore must exclude *.pem, *.key; tests generate ephemeral keys",
     "Playwright test flakiness from server startup race condition - playwright.config.ts webServer config handles this but timeout must be sufficient for Rust compilation in CI (120s)",
-    "htmx CSRF vulnerability - hx-* requests bypass traditional form CSRF tokens; relying on SameSite=Strict cookie and same-origin policy",
+    "htmx CSRF vulnerability - hx-* requests bypass traditional form CSRF tokens; SameSite=Strict cookies alone are insufficient for destructive DDL operations. Mitigated by generating per-session CSRF tokens, embedding them in templates via meta tags, and configuring htmx to send them as X-CSRF-Token headers on every request. Server validates the token on all state-changing endpoints (POST/PUT/DELETE)",
     "Super-linter may have different Rust edition expectations - need to configure RUST_EDITION or accept some false positives",
     "Askama template compile-time errors will fail the entire build - templates must be syntactically correct before integration",
     "CI build times may be slow due to Rust compilation - cargo cache action is critical for acceptable CI performance",
