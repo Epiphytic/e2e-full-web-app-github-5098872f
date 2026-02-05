@@ -705,7 +705,14 @@ askama_axum = "0.4"
 
 Run: `mkdir -p static && curl -o static/htmx.min.js https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js`
 
-**Step 3: Create base template** - HTML layout with htmx script, basic CSS, nav structure. Include a `<meta name="csrf-token" content="{{ csrf_token }}">` tag and a script block that configures htmx to attach the CSRF token to all requests via `document.body.addEventListener("htmx:configRequest", function(evt) { evt.detail.headers["X-CSRF-Token"] = document.querySelector('meta[name="csrf-token"]').content; });`.
+**Step 3: Create base template** - HTML layout with htmx script, basic CSS, nav structure. The base template MUST implement explicit CSRF token propagation for htmx:
+
+1. Embed the server-generated CSRF token in a meta tag: `<meta name="csrf-token" content="{{ csrf_token }}">`.
+2. Configure htmx globally to attach the token to **every** request using one of these two approaches (either is acceptable):
+   - **Option A (recommended — `hx-headers` on `<body>`):** Render the body tag as `<body hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'>`. This is the simplest approach and requires no JavaScript.
+   - **Option B (`htmx:configRequest` event listener):** Add a `<script>` block: `document.body.addEventListener("htmx:configRequest", function(evt) { evt.detail.headers["X-CSRF-Token"] = document.querySelector('meta[name="csrf-token"]').content; });`.
+
+This is **critical** because SameSite=Strict cookies alone are NOT sufficient CSRF protection for destructive DDL operations (DROP TABLE, DROP COLUMN). The explicit CSRF token is the **primary** defense; the cookie attributes are defense-in-depth only.
 
 **Step 4: Create login template** - Extends base, token input form, optional error message.
 
@@ -764,7 +771,13 @@ Routes wired in this task:
 - Public: `GET /login`, `POST /login`, `GET /logout`, `GET /healthz`, `GET /.well-known/jwks.json`
 - Static: `GET /static/*` via ServeDir
 
-CSRF validation middleware: For POST, PUT, DELETE requests on protected routes, extract the `X-CSRF-Token` header and validate it against the server-side session token. Return 403 Forbidden if the token is missing or invalid. Store CSRF tokens in a concurrent HashMap keyed by session/user identifier.
+CSRF validation middleware: Implement as an Axum middleware layer applied to all protected routes. For every POST, PUT, and DELETE request:
+1. Extract the `X-CSRF-Token` header value (sent automatically by htmx via the `hx-headers` body attribute or `htmx:configRequest` listener configured in the base template).
+2. Look up the expected token from a concurrent `DashMap<SessionId, String>` (or `Arc<RwLock<HashMap<...>>>`) keyed by the session/user identifier extracted from the JWT claims.
+3. Compare using a constant-time equality check to prevent timing attacks.
+4. Return **403 Forbidden** if the header is missing, the token is not found server-side, or the values do not match.
+
+This explicit per-request CSRF token validation is the **primary** CSRF defense. SameSite=Strict cookies are defense-in-depth only and must NOT be relied upon as the sole protection, especially for destructive DDL operations (DROP TABLE, DROP COLUMN).
 
 Note: Table and column routes are wired in CRUISE-006b. The router is structured so that CRUISE-006b can add its routes to the existing protected router group.
 
