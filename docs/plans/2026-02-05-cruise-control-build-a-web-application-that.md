@@ -34,7 +34,7 @@ The application is a web-based SQLite database editor. Users authenticate via JW
 ├── Cargo.toml
 ├── Cargo.lock
 ├── certs/
-│   └── README.md          # Instructions only; actual keys generated at runtime
+│   └── README.md          # Instructions only; actual keys and certificate generated at runtime
 ├── src/
 │   ├── main.rs
 │   ├── config.rs
@@ -77,7 +77,7 @@ The application is a web-based SQLite database editor. Users authenticate via JW
 │           ├── tables.spec.ts
 │           └── columns.spec.ts
 ├── scripts/
-│   ├── generate-keys.sh    # Generate RSA key pair for JWT
+│   ├── generate-keys.sh    # Generate RSA key pair and self-signed X.509 certificate for JWT
 │   └── run-e2e.sh          # Build server, start, run tests, stop
 └── docs/
     └── plans/
@@ -90,14 +90,14 @@ The application is a web-based SQLite database editor. Users authenticate via JW
 
 1. **rusqlite + async**: rusqlite is synchronous. Every DB call must be wrapped in `spawn_blocking`. Forgetting this blocks the tokio runtime.
 2. **ALTER TABLE limitations in SQLite**: SQLite doesn't support `DROP COLUMN` before version 3.35.0. Must ensure the bundled SQLite version supports it, or use the `bundled` feature of rusqlite.
-3. **JWT key management**: Private keys must never be committed. The `.gitignore` must exclude `*.pem`, `*.key` files. Test keys should be generated dynamically.
+3. **JWT key management**: Private keys and certificates must never be committed. The `.gitignore` must exclude `*.pem`, `*.key` files. Test keys and certificates should be generated dynamically.
 4. **htmx CSRF**: htmx sends AJAX requests that bypass traditional CSRF protections. SameSite=Strict cookies alone are not sufficient for destructive DDL operations. Must implement explicit CSRF tokens: generate a per-session token server-side, embed it in templates via a `<meta>` tag, and configure htmx globally with `hx-headers='{"X-CSRF-Token": "..."}'` (or use `document.body.addEventListener("htmx:configRequest", ...)` to attach the token to every request). The server must validate the `X-CSRF-Token` header on all state-changing endpoints.
 5. **SQL injection via table/column names**: Since we're building DDL dynamically, table and column names must be strictly validated (alphanumeric + underscore only) to prevent SQL injection.
 6. **Playwright test flakiness**: Server startup race condition. Tests must wait for server health check before running.
 7. **Super-linter configuration**: May flag Rust code style differently than `cargo clippy`. Need to configure linter rules to avoid false positives.
 8. **Askama template compile-time errors**: Templates must be syntactically correct before integration - errors fail the entire build.
 9. **CI build times**: Rust compilation is slow - cargo cache action is critical for acceptable CI performance.
-10. **openssl dependency**: Required for key generation scripts only (not for JWKS parsing at runtime). JWKS component extraction uses the `rsa` crate at server startup, eliminating the runtime dependency on the `openssl` CLI.
+10. **openssl dependency**: Required for key and certificate generation scripts only (not for JWKS parsing at runtime). JWKS component extraction uses the `rsa` crate at server startup, eliminating the runtime dependency on the `openssl` CLI.
 
 ---
 
@@ -744,11 +744,11 @@ git commit -m "feat: table and column handlers with full router wiring"
 
 - `generateToken(sub, expiresInSeconds)` - signs JWT with RS256 using private key
 - `generateExpiredToken(sub)` - creates already-expired token
-- `ensureKeys()` - runs generate-keys.sh if keys don't exist
+- `ensureKeys()` - runs generate-keys.sh if keys and certificate don't exist
 
 Note: Uses `child_process.execFileSync` (not `execSync`) for safety - only runs the key generation script with hardcoded paths, no user input.
 
-**Step 4: Create run-e2e.sh** - generates keys, installs npm deps, installs Playwright chromium, runs tests.
+**Step 4: Create run-e2e.sh** - generates keys and certificate, installs npm deps, installs Playwright chromium, runs tests.
 
 **Step 5: Install and verify**
 
@@ -1290,7 +1290,7 @@ CRUISE-012 (Integration) ← depends on all above
     {
       "id": "CRUISE-007",
       "subject": "Playwright E2E Test Infrastructure",
-      "description": "Create tests/e2e/ with package.json (playwright + jsonwebtoken deps), playwright.config.ts (webServer pointing to cargo run, JSON and HTML reporters), tsconfig.json, JWT test helper (generates valid/expired RS256 tokens using private key via execFileSync), and run-e2e.sh script that generates keys, installs deps, runs tests.",
+      "description": "Create tests/e2e/ with package.json (playwright + jsonwebtoken deps), playwright.config.ts (webServer pointing to cargo run, JSON and HTML reporters), tsconfig.json, JWT test helper (generates valid/expired RS256 tokens using private key via execFileSync), and run-e2e.sh script that generates keys and certificate, installs deps, runs tests.",
       "blocked_by": ["CRUISE-001"],
       "complexity": "medium",
       "acceptance_criteria": [
@@ -1299,7 +1299,7 @@ CRUISE-012 (Integration) ← depends on all above
         "JSON reporter outputs to test-results/results.json",
         "JWT helper generates valid RS256 tokens with configurable expiry",
         "JWT helper generates expired tokens for negative testing",
-        "run-e2e.sh generates keys, installs deps, runs tests",
+        "run-e2e.sh generates keys and certificate, installs deps, runs tests",
         "npm install succeeds in tests/e2e/"
       ],
       "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
@@ -1400,13 +1400,13 @@ CRUISE-012 (Integration) ← depends on all above
     "rusqlite synchronous calls must be wrapped in spawn_blocking for Axum async handlers - forgetting this will block the tokio runtime",
     "SQLite ALTER TABLE DROP COLUMN requires SQLite 3.35+ - must use rusqlite 'bundled' feature to guarantee this",
     "SQL injection via dynamically-constructed DDL statements - table/column names must be strictly validated (no quoting, only alphanumeric + underscore)",
-    "JWT private key leakage - .gitignore must exclude *.pem, *.key; tests generate ephemeral keys",
+    "JWT private key and certificate leakage - .gitignore must exclude *.pem, *.key; tests generate ephemeral keys and certificates",
     "Playwright test flakiness from server startup race condition - playwright.config.ts webServer config handles this but timeout must be sufficient for Rust compilation in CI (120s)",
     "htmx CSRF vulnerability - hx-* requests bypass traditional form CSRF tokens; SameSite=Strict cookies alone are insufficient for destructive DDL operations. Mitigated by generating per-session CSRF tokens, embedding them in templates via meta tags, and configuring htmx to send them as X-CSRF-Token headers on every request. Server validates the token on all state-changing endpoints (POST/PUT/DELETE)",
     "Super-linter may have different Rust edition expectations - need to configure RUST_EDITION or accept some false positives",
     "Askama template compile-time errors will fail the entire build - templates must be syntactically correct before integration",
     "CI build times may be slow due to Rust compilation - cargo cache action is critical for acceptable CI performance",
-    "openssl dependency for key generation scripts only (not runtime JWKS parsing) - must be available in CI runner (ubuntu-latest includes it). JWKS parsing uses the `rsa` crate at startup."
+    "openssl dependency for key and certificate generation scripts only (not runtime JWKS parsing) - must be available in CI runner (ubuntu-latest includes it). JWKS parsing uses the `rsa` crate at startup."
   ]
 }
 ```
