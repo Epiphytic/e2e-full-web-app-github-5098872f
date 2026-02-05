@@ -235,7 +235,7 @@ git commit -m "feat: project scaffolding with .gitignore and minimal Axum server
 - Create: `src/auth/mod.rs`
 - Create: `src/auth/jwt.rs`
 - Create: `src/auth/jwks.rs`
-- Modify: `Cargo.toml` (add jsonwebtoken, serde, serde_json, base64, rsa, chrono; add rand as dev-dependency for test keypair generation)
+- Modify: `Cargo.toml` (add jsonwebtoken, serde, serde_json, base64, rsa, chrono, x509-cert, pem; add rand and rcgen as dev-dependencies for test keypair and certificate generation)
 - Modify: `src/main.rs` (add JWKS route)
 
 **Step 1: Create key generation script**
@@ -290,14 +290,17 @@ serde_json = "1"
 base64 = "0.22"
 rsa = { version = "0.9", features = ["pem"] }
 chrono = { version = "0.4", features = ["serde"] }
+x509-cert = { version = "0.2", features = ["pem"] }
+pem = "3"
 
 [dev-dependencies]
 rand = "0.8"
+rcgen = "0.13"
 ```
 
 **Step 4: Write JWT validation module with tests**
 
-Create `src/auth/jwt.rs`:
+Create `src/auth/jwt.rs`. This module supports two modes of key loading: a raw RSA public key PEM (`public.pem`) and an X.509 certificate PEM (`cert.pem`) from the local JWT CA. The `validate_token_with_cert` function extracts the public key from the certificate for validation, satisfying the requirement that a local JWT CA with private key and certificate exists and is used:
 
 ```rust
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
@@ -310,12 +313,37 @@ pub struct Claims {
     pub iat: usize,
 }
 
+/// Validate a JWT using a raw RSA public key PEM
 pub fn validate_token(token: &str, public_key_pem: &[u8]) -> Result<Claims, jsonwebtoken::errors::Error> {
     let key = DecodingKey::from_rsa_pem(public_key_pem)?;
     let mut validation = Validation::new(Algorithm::RS256);
     validation.validate_exp = true;
     let token_data = decode::<Claims>(token, &key, &validation)?;
     Ok(token_data.claims)
+}
+
+/// Validate a JWT using an X.509 certificate PEM (extracts public key from cert)
+pub fn validate_token_with_cert(token: &str, cert_pem: &[u8]) -> Result<Claims, jsonwebtoken::errors::Error> {
+    let key = DecodingKey::from_rsa_pem(
+        &extract_public_key_from_cert(cert_pem)
+            .map_err(|_| jsonwebtoken::errors::ErrorKind::InvalidRsaKey("failed to extract public key from certificate".into()))?
+    )?;
+    let mut validation = Validation::new(Algorithm::RS256);
+    validation.validate_exp = true;
+    let token_data = decode::<Claims>(token, &key, &validation)?;
+    Ok(token_data.claims)
+}
+
+/// Extract the RSA public key PEM from an X.509 certificate PEM using the x509-cert crate
+fn extract_public_key_from_cert(cert_pem: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    use x509_cert::der::Decode;
+    let pem_str = std::str::from_utf8(cert_pem)?;
+    let (_, doc) = x509_cert::der::pem::PemDocument::from_pem(pem_str)?;
+    let cert = x509_cert::Certificate::from_der(doc.as_bytes())?;
+    let spki = cert.tbs_certificate.subject_public_key_info;
+    let public_key_der = spki.to_der()?;
+    let public_key_pem = pem::encode(&pem::Pem::new("PUBLIC KEY", public_key_der));
+    Ok(public_key_pem.into_bytes())
 }
 
 #[cfg(test)]
@@ -325,6 +353,7 @@ mod tests {
     use rsa::pkcs1::EncodeRsaPrivateKey;
     use rsa::pkcs8::EncodePublicKey;
     use rsa::RsaPrivateKey;
+    use rcgen::{CertificateParams, KeyPair};
 
     fn generate_test_keypair() -> (Vec<u8>, Vec<u8>) {
         let mut rng = rand::thread_rng();
@@ -344,6 +373,35 @@ mod tests {
         (private_pem, public_pem)
     }
 
+    /// Generate a test keypair along with a self-signed X.509 certificate
+    fn generate_test_keypair_with_cert() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let mut rng = rand::thread_rng();
+        let private_key = RsaPrivateKey::new(&mut rng, 2048).expect("failed to generate RSA key");
+        let private_pem = private_key
+            .to_pkcs1_pem(rsa::pkcs1::LineEnding::LF)
+            .expect("failed to encode private key PEM")
+            .as_bytes()
+            .to_vec();
+        let public_pem = private_key
+            .to_public_key()
+            .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
+            .expect("failed to encode public key PEM")
+            .as_bytes()
+            .to_vec();
+
+        // Generate self-signed X.509 certificate using rcgen
+        let key_pair = KeyPair::from_pem(&String::from_utf8(private_pem.clone()).unwrap())
+            .expect("failed to create key pair");
+        let mut params = CertificateParams::new(vec!["LocalJWTCA".to_string()])
+            .expect("failed to create cert params");
+        params.distinguished_name.push(rcgen::DnType::CommonName, "LocalJWTCA");
+        params.distinguished_name.push(rcgen::DnType::OrganizationName, "Development");
+        let cert = params.self_signed(&key_pair).expect("failed to generate self-signed certificate");
+        let cert_pem = cert.pem().into_bytes();
+
+        (private_pem, public_pem, cert_pem)
+    }
+
     #[test]
     fn test_validate_valid_token() {
         let (private_pem, public_pem) = generate_test_keypair();
@@ -357,6 +415,24 @@ mod tests {
         let token = encode(&header, &claims, &key).unwrap();
 
         let result = validate_token(&token, &public_pem);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().sub, "testuser");
+    }
+
+    #[test]
+    fn test_validate_token_with_certificate() {
+        let (private_pem, _public_pem, cert_pem) = generate_test_keypair_with_cert();
+        let claims = Claims {
+            sub: "testuser".to_string(),
+            exp: (chrono::Utc::now() + chrono::Duration::hours(1)).timestamp() as usize,
+            iat: chrono::Utc::now().timestamp() as usize,
+        };
+        let header = Header::new(Algorithm::RS256);
+        let key = EncodingKey::from_rsa_pem(&private_pem).unwrap();
+        let token = encode(&header, &claims, &key).unwrap();
+
+        // Validate using the X.509 certificate instead of the raw public key
+        let result = validate_token_with_cert(&token, &cert_pem);
         assert!(result.is_ok());
         assert_eq!(result.unwrap().sub, "testuser");
     }
@@ -382,7 +458,7 @@ mod tests {
 **Step 5: Run tests**
 
 Run: `cargo test --lib auth::jwt`
-Expected: 2 tests pass
+Expected: 3 tests pass (valid token, certificate-based validation, expired token rejection)
 
 **Step 6: Create JWKS endpoint handler**
 
