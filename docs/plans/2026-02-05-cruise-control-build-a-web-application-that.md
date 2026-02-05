@@ -908,12 +908,12 @@ git commit -m "feat: Playwright E2E test infrastructure with JWT helper"
 
 ---
 
-### Task CRUISE-008: E2E Test Specs
+### Task CRUISE-008a: Auth E2E Test Specs
+
+> **Split rationale:** Originally a single CRUISE-008 task covering all E2E test specs. Split into 008a (Auth), 008b (Tables), and 008c (Columns) because each feature area can be implemented and verified in parallel as the corresponding handlers are completed. Auth tests only depend on the auth handlers (CRUISE-006a), while table and column tests depend on their respective handlers (CRUISE-006b). This split enables parallel development and independent verification of each test suite.
 
 **Files:**
 - Create: `tests/e2e/specs/auth.spec.ts`
-- Create: `tests/e2e/specs/tables.spec.ts`
-- Create: `tests/e2e/specs/columns.spec.ts`
 
 **Step 1: Write auth.spec.ts**
 
@@ -925,30 +925,72 @@ Tests:
 - `should logout successfully` - login, click logout, verify login page shown
 - `.well-known/jwks.json returns valid JWKS` - API request, verify kty/alg/n/e fields
 
-**Step 2: Write tables.spec.ts**
+**Step 2: Run tests**
+
+Run: `cd tests/e2e && npx playwright test specs/auth.spec.ts`
+Expected: All auth tests pass
+
+**Step 3: Commit**
+
+```bash
+git add tests/e2e/specs/auth.spec.ts
+git commit -m "feat: auth E2E test specs"
+```
+
+---
+
+### Task CRUISE-008b: Table E2E Test Specs
+
+> **Split rationale:** See CRUISE-008a for split rationale. Table E2E tests are separated to allow parallel implementation with auth and column tests once the table handlers (CRUISE-006b) are ready.
+
+**Files:**
+- Create: `tests/e2e/specs/tables.spec.ts`
+
+**Step 1: Write tables.spec.ts**
 
 Tests (each test logs in with fresh JWT first):
 - `should create a new table` - fill form, submit, verify table appears in list
 - `should delete a table` - create table, accept confirm dialog, click delete, verify gone
 - `should show table details when clicking table name` - create table, click name, verify detail view
 
-**Step 3: Write columns.spec.ts**
+**Step 2: Run tests**
+
+Run: `cd tests/e2e && npx playwright test specs/tables.spec.ts`
+Expected: All table tests pass
+
+**Step 3: Commit**
+
+```bash
+git add tests/e2e/specs/tables.spec.ts
+git commit -m "feat: table E2E test specs"
+```
+
+---
+
+### Task CRUISE-008c: Column E2E Test Specs
+
+> **Split rationale:** See CRUISE-008a for split rationale. Column E2E tests are separated to allow parallel implementation with auth and table tests once the column handlers (CRUISE-006b) are ready.
+
+**Files:**
+- Create: `tests/e2e/specs/columns.spec.ts`
+
+**Step 1: Write columns.spec.ts**
 
 Tests (each test logs in and creates a table first):
 - `should add a column to a table` - fill column form, submit, verify column appears
 - `should drop a column from a table` - add column, accept confirm, click drop, verify gone
 - `should show correct column types` - add TEXT, INTEGER, REAL columns, verify types shown
 
-**Step 4: Run tests**
+**Step 2: Run tests**
 
-Run: `cd tests/e2e && npx playwright test`
-Expected: All tests pass
+Run: `cd tests/e2e && npx playwright test specs/columns.spec.ts`
+Expected: All column tests pass
 
-**Step 5: Commit**
+**Step 3: Commit**
 
 ```bash
-git add tests/e2e/specs/
-git commit -m "feat: E2E test specs for auth, tables, and columns"
+git add tests/e2e/specs/columns.spec.ts
+git commit -m "feat: column E2E test specs"
 ```
 
 ---
@@ -1223,8 +1265,10 @@ CRUISE-001 (Scaffolding + .gitignore)
     ├── CRUISE-009 (Lint CI)
     └── CRUISE-010 (Dep Review CI)
 
-CRUISE-008 (E2E Test Specs) ← depends on 006b, 007
-CRUISE-011 (E2E CI) ← depends on 007, 008
+CRUISE-008a (Auth E2E Tests) ← depends on 006a, 007
+CRUISE-008b (Table E2E Tests) ← depends on 006b, 007
+CRUISE-008c (Column E2E Tests) ← depends on 006b, 007
+CRUISE-011 (E2E CI) ← depends on 007, 008a, 008b, 008c
 CRUISE-012 (Integration) ← depends on all above
 ```
 
@@ -1289,12 +1333,36 @@ CRUISE-012 (Integration) ← depends on all above
       "task_ids": ["CRUISE-006a", "CRUISE-006b"]
     },
     {
-      "id": "SPAWN-006",
-      "name": "E2E Test Infrastructure and Specs",
+      "id": "SPAWN-006a",
+      "name": "E2E Test Infrastructure",
       "use_spawn_team": false,
       "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 600",
       "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
-      "task_ids": ["CRUISE-007", "CRUISE-008"]
+      "task_ids": ["CRUISE-007"]
+    },
+    {
+      "id": "SPAWN-006b",
+      "name": "Auth E2E Test Specs",
+      "use_spawn_team": false,
+      "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 300",
+      "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+      "task_ids": ["CRUISE-008a"]
+    },
+    {
+      "id": "SPAWN-006c",
+      "name": "Table E2E Test Specs",
+      "use_spawn_team": false,
+      "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 300",
+      "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+      "task_ids": ["CRUISE-008b"]
+    },
+    {
+      "id": "SPAWN-006d",
+      "name": "Column E2E Test Specs",
+      "use_spawn_team": false,
+      "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 300",
+      "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+      "task_ids": ["CRUISE-008c"]
     },
     {
       "id": "SPAWN-007",
@@ -1478,24 +1546,52 @@ CRUISE-012 (Integration) ← depends on all above
       ],
       "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
       "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 600",
-      "spawn_instance": "SPAWN-006"
+      "spawn_instance": "SPAWN-006a"
     },
     {
-      "id": "CRUISE-008",
-      "subject": "E2E Test Specs",
-      "description": "Write Playwright test specs: auth.spec.ts (login with valid JWT, reject expired JWT, reject invalid JWT, logout, JWKS endpoint), tables.spec.ts (create table, delete table, view table details), columns.spec.ts (add column, drop column, verify column types). All tests use short-lived (5-min) JWT tokens.",
-      "blocked_by": ["CRUISE-006b", "CRUISE-007"],
-      "complexity": "high",
+      "id": "CRUISE-008a",
+      "subject": "Auth E2E Test Specs",
+      "description": "Write Playwright auth test specs: auth.spec.ts (login with valid JWT, reject expired JWT, reject invalid JWT, logout, JWKS endpoint). All tests use short-lived (5-min) JWT tokens. Split from original CRUISE-008 to allow parallel implementation with table and column E2E tests.",
+      "blocked_by": ["CRUISE-006a", "CRUISE-007"],
+      "complexity": "medium",
       "acceptance_criteria": [
         "Auth tests: valid login, expired token rejection, invalid token rejection, logout, JWKS endpoint validation",
-        "Table tests: create table, delete table with confirmation dialog, view table detail",
-        "Column tests: add column, drop column with confirmation dialog, verify TEXT/INTEGER/REAL column types",
         "All tests use programmatically-generated short-lived (300s) JWT tokens",
-        "All tests pass when run against the application"
+        "All auth tests pass when run against the application"
       ],
       "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
-      "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 600",
-      "spawn_instance": "SPAWN-006"
+      "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 300",
+      "spawn_instance": "SPAWN-006b"
+    },
+    {
+      "id": "CRUISE-008b",
+      "subject": "Table E2E Test Specs",
+      "description": "Write Playwright table test specs: tables.spec.ts (create table, delete table, view table details). Each test logs in with a fresh JWT first. Split from original CRUISE-008 to allow parallel implementation with auth and column E2E tests.",
+      "blocked_by": ["CRUISE-006b", "CRUISE-007"],
+      "complexity": "medium",
+      "acceptance_criteria": [
+        "Table tests: create table, delete table with confirmation dialog, view table detail",
+        "All tests use programmatically-generated short-lived (300s) JWT tokens",
+        "All table tests pass when run against the application"
+      ],
+      "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+      "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 300",
+      "spawn_instance": "SPAWN-006c"
+    },
+    {
+      "id": "CRUISE-008c",
+      "subject": "Column E2E Test Specs",
+      "description": "Write Playwright column test specs: columns.spec.ts (add column, drop column, verify column types). Each test logs in and creates a table first. Split from original CRUISE-008 to allow parallel implementation with auth and table E2E tests.",
+      "blocked_by": ["CRUISE-006b", "CRUISE-007"],
+      "complexity": "medium",
+      "acceptance_criteria": [
+        "Column tests: add column, drop column with confirmation dialog, verify TEXT/INTEGER/REAL column types",
+        "All tests use programmatically-generated short-lived (300s) JWT tokens",
+        "All column tests pass when run against the application"
+      ],
+      "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+      "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 300",
+      "spawn_instance": "SPAWN-006d"
     },
     {
       "id": "CRUISE-009",
@@ -1534,7 +1630,7 @@ CRUISE-012 (Integration) ← depends on all above
       "id": "CRUISE-011",
       "subject": "GitHub Actions E2E Test Workflow",
       "description": "Create .github/workflows/e2e.yml that builds Rust server, installs Node.js + Playwright, generates JWT keys, runs E2E tests, uploads test results (playwright-report/ and test-results/) as artifacts with 30-day retention, and posts a test result summary as a PR comment for direct visibility. Triggered on all PRs. Caches Cargo dependencies. Workflow permissions include pull-requests:write for PR comment posting.",
-      "blocked_by": ["CRUISE-007", "CRUISE-008"],
+      "blocked_by": ["CRUISE-007", "CRUISE-008a", "CRUISE-008b", "CRUISE-008c"],
       "complexity": "medium",
       "acceptance_criteria": [
         "Workflow triggers on pull_request to any branch",
@@ -1557,7 +1653,7 @@ CRUISE-012 (Integration) ← depends on all above
       "id": "CRUISE-012",
       "subject": "Integration Testing and Final Verification",
       "description": "End-to-end verification: generate keys, build server, verify healthz and JWKS endpoints manually via curl, run cargo test (all unit tests), run Playwright E2E tests. Fix any issues found. Ensure no compiler warnings. Final commit.",
-      "blocked_by": ["CRUISE-001", "CRUISE-002", "CRUISE-003", "CRUISE-004a", "CRUISE-004b", "CRUISE-005", "CRUISE-006a", "CRUISE-006b", "CRUISE-007", "CRUISE-008", "CRUISE-009", "CRUISE-010", "CRUISE-011"],
+      "blocked_by": ["CRUISE-001", "CRUISE-002", "CRUISE-003", "CRUISE-004a", "CRUISE-004b", "CRUISE-005", "CRUISE-006a", "CRUISE-006b", "CRUISE-007", "CRUISE-008a", "CRUISE-008b", "CRUISE-008c", "CRUISE-009", "CRUISE-010", "CRUISE-011"],
       "complexity": "medium",
       "acceptance_criteria": [
         "cargo build succeeds with no warnings",
