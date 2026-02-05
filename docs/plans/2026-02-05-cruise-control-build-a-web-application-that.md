@@ -923,6 +923,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write  # Required for posting test result summary as PR comment
 
 jobs:
   e2e:
@@ -993,7 +994,13 @@ jobs:
           comment-title: 'Playwright E2E Test Results'
 ```
 
-> **Note on "push test results to the repository":** Test results are surfaced on the PR via two mechanisms: (1) GitHub Actions artifacts store the full Playwright report and raw results for download/debugging, and (2) a PR comment summary (via `playwright-report-summary` action) posts pass/fail results directly on the PR for immediate visibility. Results are NOT committed to the repository branch, as committing generated test output would pollute the git history and is not standard CI practice. Artifacts + PR comments provide equivalent validation visibility without repository pollution.
+> **Interpretation of "Push test results to the repository for validation on the PR":** We interpret "push to the repository" as making results accessible within the repository's PR workflow, NOT as committing test output files to a branch. Committing generated test reports to the branch would pollute git history with transient CI artifacts and is not standard practice. Instead, test results are surfaced directly on the PR via three complementary mechanisms:
+>
+> 1. **GitHub Actions artifacts** — full Playwright HTML report and raw test-results uploaded with 30-day retention, downloadable from the workflow run summary linked on the PR's Checks tab.
+> 2. **PR comment summary** — the `playwright-report-summary` action posts a pass/fail summary with test counts directly as a PR comment, providing immediate visibility without leaving the PR page.
+> 3. **GitHub Actions check status** — the workflow run itself reports pass/fail on the PR's Checks tab, blocking merge on failure if branch protection rules are configured.
+>
+> These three mechanisms satisfy the validation requirement: reviewers can see results directly on the PR (comment + checks), drill into details (artifacts), and enforce quality gates (required status checks). If literal in-repository storage is required instead, an alternative approach would be to commit a `test-results/summary.json` to a dedicated `gh-pages` or `test-reports` branch — but this adds complexity and is not recommended.
 
 **Step 2: Commit**
 
@@ -1365,11 +1372,12 @@ CRUISE-012 (Integration) ← depends on all above
     {
       "id": "CRUISE-011",
       "subject": "GitHub Actions E2E Test Workflow",
-      "description": "Create .github/workflows/e2e.yml that builds Rust server, installs Node.js + Playwright, generates JWT keys, runs E2E tests, uploads test results (playwright-report/ and test-results/) as artifacts with 30-day retention, and posts a test result summary as a PR comment for direct visibility. Triggered on all PRs. Caches Cargo dependencies.",
+      "description": "Create .github/workflows/e2e.yml that builds Rust server, installs Node.js + Playwright, generates JWT keys, runs E2E tests, uploads test results (playwright-report/ and test-results/) as artifacts with 30-day retention, and posts a test result summary as a PR comment for direct visibility. Triggered on all PRs. Caches Cargo dependencies. Workflow permissions include pull-requests:write for PR comment posting.",
       "blocked_by": ["CRUISE-007", "CRUISE-008"],
       "complexity": "medium",
       "acceptance_criteria": [
         "Workflow triggers on pull_request to any branch",
+        "Workflow permissions include contents:read and pull-requests:write",
         "Installs Rust stable toolchain and caches cargo dependencies",
         "Builds Rust server in release mode",
         "Sets up Node.js 20 and installs test dependencies with npm ci",
@@ -1377,7 +1385,8 @@ CRUISE-012 (Integration) ← depends on all above
         "Runs Playwright tests with CI=true",
         "Uploads playwright-report and test-results as artifacts (always, even on failure)",
         "Artifact retention set to 30 days",
-        "Posts test result summary as a PR comment via playwright-report-summary action for direct PR visibility (results are NOT committed to the branch; artifacts + PR comments satisfy the validation requirement without polluting git history)"
+        "Posts test result summary as a PR comment via playwright-report-summary action for direct PR visibility",
+        "Test results are NOT committed to the branch; artifacts + PR comments + check status satisfy the 'push test results to the repository for validation on the PR' requirement without polluting git history (see plan note for rationale and alternative if literal in-repo storage is needed)"
       ],
       "permissions": ["Read", "Write", "Edit"],
       "cli_params": "claude --model haiku --allowedTools Read,Write,Edit --timeout 180",
