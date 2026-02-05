@@ -97,7 +97,7 @@ The application is a web-based SQLite database editor. Users authenticate via JW
 7. **Super-linter configuration**: May flag Rust code style differently than `cargo clippy`. Need to configure linter rules to avoid false positives.
 8. **Askama template compile-time errors**: Templates must be syntactically correct before integration - errors fail the entire build.
 9. **CI build times**: Rust compilation is slow - cargo cache action is critical for acceptable CI performance.
-10. **openssl dependency**: Required for key and certificate generation scripts only (not for JWKS parsing at runtime). JWKS component extraction uses the `rsa` crate at server startup, eliminating the runtime dependency on the `openssl` CLI.
+10. **openssl dependency**: Required for key and certificate generation scripts only (not for JWKS parsing at runtime or tests). JWKS component extraction uses the `rsa` crate at server startup, and tests use the `rsa` + `rand` crates for keypair generation, eliminating any runtime or test dependency on the `openssl` CLI.
 
 ---
 
@@ -235,7 +235,7 @@ git commit -m "feat: project scaffolding with .gitignore and minimal Axum server
 - Create: `src/auth/mod.rs`
 - Create: `src/auth/jwt.rs`
 - Create: `src/auth/jwks.rs`
-- Modify: `Cargo.toml` (add jsonwebtoken, serde, serde_json, base64, rsa, chrono)
+- Modify: `Cargo.toml` (add jsonwebtoken, serde, serde_json, base64, rsa, chrono; add rand as dev-dependency for test keypair generation)
 - Modify: `src/main.rs` (add JWKS route)
 
 **Step 1: Create key generation script**
@@ -290,6 +290,9 @@ serde_json = "1"
 base64 = "0.22"
 rsa = { version = "0.9", features = ["pem"] }
 chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+rand = "0.8"
 ```
 
 **Step 4: Write JWT validation module with tests**
@@ -319,25 +322,24 @@ pub fn validate_token(token: &str, public_key_pem: &[u8]) -> Result<Claims, json
 mod tests {
     use super::*;
     use jsonwebtoken::{encode, EncodingKey, Header};
-    use std::process::{Command, Stdio};
-    use std::io::Write;
+    use rsa::pkcs1::EncodeRsaPrivateKey;
+    use rsa::pkcs8::EncodePublicKey;
+    use rsa::RsaPrivateKey;
 
     fn generate_test_keypair() -> (Vec<u8>, Vec<u8>) {
-        let output = Command::new("openssl")
-            .args(["genrsa", "2048"])
-            .output()
-            .expect("openssl required for tests");
-        let private_pem = output.stdout;
-
-        let mut child = Command::new("openssl")
-            .args(["rsa", "-pubout"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("openssl required for tests");
-        child.stdin.as_mut().unwrap().write_all(&private_pem).unwrap();
-        let output = child.wait_with_output().expect("openssl failed");
-        let public_pem = output.stdout;
+        let mut rng = rand::thread_rng();
+        let private_key = RsaPrivateKey::new(&mut rng, 2048).expect("failed to generate RSA key");
+        let private_pem = private_key
+            .to_pkcs1_pem(rsa::pkcs1::LineEnding::LF)
+            .expect("failed to encode private key PEM")
+            .as_bytes()
+            .to_vec();
+        let public_pem = private_key
+            .to_public_key()
+            .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
+            .expect("failed to encode public key PEM")
+            .as_bytes()
+            .to_vec();
 
         (private_pem, public_pem)
     }
@@ -1406,7 +1408,7 @@ CRUISE-012 (Integration) ← depends on all above
     "Super-linter may have different Rust edition expectations - need to configure RUST_EDITION or accept some false positives",
     "Askama template compile-time errors will fail the entire build - templates must be syntactically correct before integration",
     "CI build times may be slow due to Rust compilation - cargo cache action is critical for acceptable CI performance",
-    "openssl dependency for key and certificate generation scripts only (not runtime JWKS parsing) - must be available in CI runner (ubuntu-latest includes it). JWKS parsing uses the `rsa` crate at startup."
+    "openssl dependency for key and certificate generation scripts only (not runtime JWKS parsing or tests) - must be available in CI runner (ubuntu-latest includes it). JWKS parsing uses the `rsa` crate at startup; tests use `rsa` + `rand` crates for ephemeral keypair generation."
   ]
 }
 ```
