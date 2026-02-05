@@ -1175,20 +1175,17 @@ jobs:
 
 > **Clarification: "Push test results to the repository for validation on the PR"**
 >
-> **Important distinction:** GitHub Actions artifacts are stored externally (in GitHub's artifact storage), not committed to the repository itself. This means they are accessible from the PR's workflow run page but are not part of the git history or branch contents.
+> **Important distinction:** GitHub Actions artifacts are stored externally (in GitHub's artifact storage), not committed to the repository itself. They are accessible from the PR's workflow run page but are not part of the git history or branch contents. Artifacts alone do **not** satisfy a literal "in the repository" requirement.
 >
-> **Primary approach (recommended):** We use three complementary mechanisms that surface test results directly on the PR without committing files to the branch:
+> **Chosen approach:** We interpret "push test results for validation on the PR" as meaning **test results must be visible and actionable directly on the PR** — not that raw result files must be committed to a branch. We achieve this through three complementary mechanisms:
 >
-> 1. **GitHub Actions artifacts** — full Playwright HTML report and raw test-results uploaded with 30-day retention, downloadable from the workflow run summary linked on the PR's Checks tab. These are stored externally, not in the repository.
-> 2. **PR comment summary** — the `playwright-report-summary` action posts a pass/fail summary with test counts directly as a PR comment, providing immediate visibility without leaving the PR page.
-> 3. **GitHub Actions check status** — the workflow run itself reports pass/fail on the PR's Checks tab, blocking merge on failure if branch protection rules are configured.
+> 1. **PR comment summary (primary visibility)** — the `playwright-report-summary` action posts a pass/fail summary with test counts directly as a PR comment. This is the main way reviewers validate test results without leaving the PR page.
+> 2. **GitHub Actions check status** — the workflow run reports pass/fail on the PR's Checks tab, blocking merge on failure when branch protection rules are configured. This enforces validation gating.
+> 3. **GitHub Actions artifacts (supplementary)** — full Playwright HTML report and raw test-results uploaded with 30-day retention, downloadable from the workflow run summary. These provide drill-down detail but are stored externally, not in the repository.
 >
-> **Alternative approach (if literal in-repository storage is required):** If the requirement strictly means test results must be committed to a branch in the repository, the CI workflow should be extended to:
-> 1. Generate a `test-results/summary.json` containing pass/fail counts, test names, and timestamps.
-> 2. Commit this file to the PR's source branch as part of the CI workflow (using `git push` from the action with appropriate permissions).
-> 3. This ensures the results are literally "in the repository" and visible in the PR's file diff.
+> **Rationale:** Committing generated test result files to the branch is explicitly avoided because it pollutes git history with transient artifacts, creates merge conflicts, and is not standard CI/CD practice. The PR comment + check status approach provides stronger validation (automated gating + human-readable summary) than committed files would.
 >
-> **Decision:** We proceed with the primary approach (artifacts + PR comments + check status) as it is standard CI/CD practice and avoids polluting git history with transient generated files. If reviewers or stakeholders confirm that literal in-repository commits are required, the alternative approach above should be implemented by adding a commit step to the workflow after test execution.
+> **If literal in-repository storage is later required:** The CI workflow can be extended to commit a `test-results/summary.json` to the PR's source branch after test execution (requires `contents: write` permission and a `git push` step). This is not recommended but is a viable fallback.
 
 **Step 2: Commit**
 
@@ -1653,7 +1650,7 @@ CRUISE-012 (Integration) ← depends on all above
         "Uploads playwright-report and test-results as artifacts (always, even on failure)",
         "Artifact retention set to 30 days",
         "Posts test result summary as a PR comment via playwright-report-summary action for direct PR visibility",
-        "NOTE: GitHub Actions artifacts are stored externally, not committed to the repository. Artifacts + PR comments + check status satisfy the 'push test results for validation on the PR' requirement via standard CI/CD practice. If literal in-repository storage is required (committing results to the branch), see the plan clarification note for an alternative commit-based approach"
+        "NOTE: 'Push test results for validation on the PR' is satisfied by PR comment summary (direct visibility) + check status (merge gating) + artifacts (drill-down detail). Artifacts are stored externally, not committed to the repo — this is intentional to avoid polluting git history. See the plan clarification note in the CI workflow section for full rationale and a fallback commit-based approach if literal in-repo storage is later required."
       ],
       "permissions": ["Read", "Write", "Edit"],
       "cli_params": "claude --model haiku --allowedTools Read,Write,Edit --timeout 180",
