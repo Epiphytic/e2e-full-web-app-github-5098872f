@@ -581,15 +581,13 @@ git commit -m "feat: Askama templates and htmx static assets"
 
 ---
 
-### Task CRUISE-006: HTTP Handlers and Full Router Wiring
+### Task CRUISE-006a: Auth Handlers, Config, and Router Setup
 
 **Files:**
 - Create: `src/handlers/mod.rs`
 - Create: `src/handlers/auth.rs`
-- Create: `src/handlers/tables.rs`
-- Create: `src/handlers/columns.rs`
 - Create: `src/config.rs`
-- Modify: `src/main.rs` (full router wiring)
+- Modify: `src/main.rs` (initial router wiring with auth routes, static serving, CSRF infrastructure)
 - Modify: `Cargo.toml` (add tower-http, cookie)
 
 **Step 1: Add dependencies**
@@ -608,7 +606,46 @@ tower-http = { version = "0.6", features = ["fs"] }
 - `logout()` - clears cookie and CSRF token, redirects to /login
 - `dashboard(Request)` - extracts Claims from extensions, renders dashboard.html with CSRF token embedded in a `<meta name="csrf-token">` tag for htmx to read
 
-**Step 4: Create table handlers**
+**Step 4: Create handlers/mod.rs**
+
+```rust
+pub mod auth;
+```
+
+**Step 5: Wire initial main.rs with auth routes and CSRF infrastructure**
+
+Routes wired in this task:
+- Protected (behind auth middleware): `GET /` (dashboard)
+- Public: `GET /login`, `POST /login`, `GET /logout`, `GET /healthz`, `GET /.well-known/jwks.json`
+- Static: `GET /static/*` via ServeDir
+
+CSRF validation middleware: For POST, PUT, DELETE requests on protected routes, extract the `X-CSRF-Token` header and validate it against the server-side session token. Return 403 Forbidden if the token is missing or invalid. Store CSRF tokens in a concurrent HashMap keyed by session/user identifier.
+
+Note: Table and column routes are wired in CRUISE-006b. The router is structured so that CRUISE-006b can add its routes to the existing protected router group.
+
+**Step 6: Build and verify**
+
+Run: `cargo build`
+Expected: Compiles successfully
+
+**Step 7: Commit**
+
+```bash
+git add src/handlers/mod.rs src/handlers/auth.rs src/config.rs src/main.rs Cargo.toml Cargo.lock
+git commit -m "feat: auth handlers, config, CSRF infrastructure, and initial router wiring"
+```
+
+---
+
+### Task CRUISE-006b: Table/Column Handlers and Full Router Wiring
+
+**Files:**
+- Create: `src/handlers/tables.rs`
+- Create: `src/handlers/columns.rs`
+- Modify: `src/handlers/mod.rs` (add tables, columns modules)
+- Modify: `src/main.rs` (add table/column routes to protected router group)
+
+**Step 1: Create table handlers**
 
 `src/handlers/tables.rs`:
 - `list_tables()` - renders table_list.html partial
@@ -616,31 +653,37 @@ tower-http = { version = "0.6", features = ["fs"] }
 - `delete_table(Path)` - calls schema::drop_table, re-renders table list
 - `show_table(Path)` - renders table_detail.html partial
 
-**Step 5: Create column handlers**
+**Step 2: Create column handlers**
 
 `src/handlers/columns.rs`:
 - `add_column(Path, Form)` - calls schema::add_column, re-renders table detail
 - `drop_column(Path)` - calls schema::drop_column, re-renders table detail
 
-**Step 6: Wire main.rs**
+**Step 3: Update handlers/mod.rs**
 
-Routes:
-- Protected (behind auth middleware + CSRF validation middleware on state-changing methods): `GET /`, `GET /tables`, `POST /tables`, `DELETE /tables/{name}`, `GET /tables/{name}`, `POST /tables/{name}/columns`, `DELETE /tables/{name}/columns/{col}`
-- Public: `GET /login`, `POST /login`, `GET /logout`, `GET /healthz`, `GET /.well-known/jwks.json`
-- Static: `GET /static/*` via ServeDir
+```rust
+pub mod auth;
+pub mod tables;
+pub mod columns;
+```
 
-CSRF validation middleware: For POST, PUT, DELETE requests on protected routes, extract the `X-CSRF-Token` header and validate it against the server-side session token. Return 403 Forbidden if the token is missing or invalid. Store CSRF tokens in a concurrent HashMap keyed by session/user identifier.
+**Step 4: Wire table/column routes into main.rs**
 
-**Step 7: Build and verify**
+Add to the existing protected router group:
+- `GET /tables`, `POST /tables`, `DELETE /tables/{name}`, `GET /tables/{name}`, `POST /tables/{name}/columns`, `DELETE /tables/{name}/columns/{col}`
+
+All these routes are behind the auth middleware and CSRF validation middleware established in CRUISE-006a.
+
+**Step 5: Build and verify**
 
 Run: `cargo build`
 Expected: Compiles successfully
 
-**Step 8: Commit**
+**Step 6: Commit**
 
 ```bash
-git add src/ Cargo.toml Cargo.lock
-git commit -m "feat: HTTP handlers, router, and full application wiring"
+git add src/handlers/ src/main.rs
+git commit -m "feat: table and column handlers with full router wiring"
 ```
 
 ---
@@ -983,14 +1026,16 @@ CRUISE-001 (Scaffolding + .gitignore)
     ├── CRUISE-009 (Lint CI)
     └── CRUISE-010 (Dep Review CI)
 
-CRUISE-006 (Handlers + Router) ← depends on 002, 003, 004, 005
-CRUISE-008 (E2E Test Specs) ← depends on 006, 007
+CRUISE-006a (Auth Handlers + Router Setup) ← depends on 002, 003, 005
+CRUISE-006b (Table/Column Handlers) ← depends on 004, 005, 006a
+CRUISE-008 (E2E Test Specs) ← depends on 006b, 007
 CRUISE-011 (E2E CI) ← depends on 007, 008
 CRUISE-012 (Integration) ← depends on all above
 ```
 
 **Parallelization opportunities after CRUISE-001:**
 - CRUISE-002+003, CRUISE-004, CRUISE-005, CRUISE-007, CRUISE-009, CRUISE-010 can all run in parallel.
+- CRUISE-006a can start as soon as 002, 003, and 005 are complete — without waiting for the Database Layer (004). This reduces the critical path by allowing auth handler development to proceed in parallel with database layer work.
 
 ---
 
@@ -1037,7 +1082,7 @@ CRUISE-012 (Integration) ← depends on all above
       "use_spawn_team": true,
       "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 600",
       "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
-      "task_ids": ["CRUISE-006"]
+      "task_ids": ["CRUISE-006a", "CRUISE-006b"]
     },
     {
       "id": "SPAWN-006",
@@ -1155,26 +1200,40 @@ CRUISE-012 (Integration) ← depends on all above
       "spawn_instance": "SPAWN-004"
     },
     {
-      "id": "CRUISE-006",
-      "subject": "HTTP Handlers and Full Router Wiring",
-      "description": "Create all HTTP handlers: auth handlers (login page, login POST with cookie, logout, dashboard), table handlers (list, create, delete, show detail), column handlers (add, drop). Create config.rs for env-based configuration. Wire everything in main.rs: protected routes behind auth middleware, public routes (login, JWKS, health), static file serving via tower-http ServeDir. Add tower-http dependency.",
-      "blocked_by": ["CRUISE-002", "CRUISE-003", "CRUISE-004", "CRUISE-005"],
+      "id": "CRUISE-006a",
+      "subject": "Auth Handlers, Config, and Router Setup",
+      "description": "Create auth HTTP handlers (login page, login POST with cookie and CSRF token, logout, dashboard), config.rs for env-based configuration, and initial main.rs router wiring: protected dashboard route behind auth middleware, public routes (login, JWKS, health), static file serving via tower-http ServeDir, and CSRF validation middleware infrastructure. Add tower-http dependency.",
+      "blocked_by": ["CRUISE-002", "CRUISE-003", "CRUISE-005"],
       "complexity": "high",
       "acceptance_criteria": [
         "Login page renders at GET /login",
         "POST /login validates JWT, sets HttpOnly SameSite=Strict cookie, and generates a per-session CSRF token",
         "GET /logout clears cookie and redirects to /login",
         "GET / shows dashboard (protected)",
+        "GET /static/* serves static files",
+        "CSRF token generated per session and validated on all state-changing (POST/PUT/DELETE) protected endpoints via X-CSRF-Token header",
+        "CSRF token embedded in base template via meta tag and attached to htmx requests via htmx:configRequest event listener",
+        "Missing or invalid CSRF token returns 403 Forbidden",
+        "Router is structured so table/column routes can be added in CRUISE-006b",
+        "cargo build succeeds"
+      ],
+      "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+      "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 600",
+      "spawn_instance": "SPAWN-005"
+    },
+    {
+      "id": "CRUISE-006b",
+      "subject": "Table/Column Handlers and Full Router Wiring",
+      "description": "Create table handlers (list, create, delete, show detail) and column handlers (add, drop). Wire table/column routes into the existing protected router group established in CRUISE-006a. All routes are behind auth middleware and CSRF validation.",
+      "blocked_by": ["CRUISE-004", "CRUISE-005", "CRUISE-006a"],
+      "complexity": "medium",
+      "acceptance_criteria": [
         "GET /tables returns table list partial (protected)",
         "POST /tables creates table (protected)",
         "DELETE /tables/{name} drops table (protected)",
         "GET /tables/{name} returns table detail partial (protected)",
         "POST /tables/{name}/columns adds column (protected)",
         "DELETE /tables/{name}/columns/{col} drops column (protected)",
-        "GET /static/* serves static files",
-        "CSRF token generated per session and validated on all state-changing (POST/PUT/DELETE) protected endpoints via X-CSRF-Token header",
-        "CSRF token embedded in base template via meta tag and attached to htmx requests via htmx:configRequest event listener",
-        "Missing or invalid CSRF token returns 403 Forbidden",
         "cargo build succeeds"
       ],
       "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
@@ -1204,7 +1263,7 @@ CRUISE-012 (Integration) ← depends on all above
       "id": "CRUISE-008",
       "subject": "E2E Test Specs",
       "description": "Write Playwright test specs: auth.spec.ts (login with valid JWT, reject expired JWT, reject invalid JWT, logout, JWKS endpoint), tables.spec.ts (create table, delete table, view table details), columns.spec.ts (add column, drop column, verify column types). All tests use short-lived (5-min) JWT tokens.",
-      "blocked_by": ["CRUISE-006", "CRUISE-007"],
+      "blocked_by": ["CRUISE-006b", "CRUISE-007"],
       "complexity": "high",
       "acceptance_criteria": [
         "Auth tests: valid login, expired token rejection, invalid token rejection, logout, JWKS endpoint validation",
@@ -1274,7 +1333,7 @@ CRUISE-012 (Integration) ← depends on all above
       "id": "CRUISE-012",
       "subject": "Integration Testing and Final Verification",
       "description": "End-to-end verification: generate keys, build server, verify healthz and JWKS endpoints manually via curl, run cargo test (all unit tests), run Playwright E2E tests. Fix any issues found. Ensure no compiler warnings. Final commit.",
-      "blocked_by": ["CRUISE-001", "CRUISE-002", "CRUISE-003", "CRUISE-004", "CRUISE-005", "CRUISE-006", "CRUISE-007", "CRUISE-008", "CRUISE-009", "CRUISE-010", "CRUISE-011"],
+      "blocked_by": ["CRUISE-001", "CRUISE-002", "CRUISE-003", "CRUISE-004", "CRUISE-005", "CRUISE-006a", "CRUISE-006b", "CRUISE-007", "CRUISE-008", "CRUISE-009", "CRUISE-010", "CRUISE-011"],
       "complexity": "medium",
       "acceptance_criteria": [
         "cargo build succeeds with no warnings",
