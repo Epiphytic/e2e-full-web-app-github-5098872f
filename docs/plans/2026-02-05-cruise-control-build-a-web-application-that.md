@@ -1088,6 +1088,8 @@ git commit -m "ci: add dependency review workflow for PRs"
 
 ### Task CRUISE-011: GitHub Actions - E2E Test Workflow
 
+> **Note:** This task depends on CRUISE-008a, CRUISE-008b, and CRUISE-008c (the split E2E test specs). The original monolithic CRUISE-008 was split into three separate tasks — Auth, Table, and Column E2E tests — to allow parallel implementation and independent verification as the corresponding handlers are completed. See CRUISE-008a split rationale for details.
+
 **Files:**
 - Create: `.github/workflows/e2e.yml`
 
