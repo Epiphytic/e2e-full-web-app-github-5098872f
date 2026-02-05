@@ -1,0 +1,1288 @@
+# SQLite Database Editor Web Application - Implementation Plan
+
+> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+
+**Goal:** Build a Rust web application with htmx frontend that allows authenticated users to create, modify, and delete SQLite tables and their structures, secured with JWT authentication.
+
+**Architecture:** Axum-based Rust backend serves htmx-powered HTML templates (via Askama) and a REST/hypermedia API for SQLite schema operations. JWT authentication uses a local CA with RS256 keys, exposing a `.well-known/jwks.json` endpoint. Playwright E2E tests validate the full user flow. GitHub Actions provides CI/CD with linting and dependency review.
+
+**Tech Stack:** Rust (Axum, rusqlite, jsonwebtoken, askama), htmx, Playwright, GitHub Actions (super-linter, dependency-review-action)
+
+---
+
+## Overview
+
+The application is a web-based SQLite database editor. Users authenticate via JWT tokens (RS256-signed by a local CA), then interact with an htmx-powered UI to manage database tables: creating/removing tables, and adding/removing columns. The backend uses Axum for HTTP handling, rusqlite for direct SQLite manipulation, and Askama for server-side HTML templating that htmx swaps in dynamically.
+
+### Key Architectural Decisions
+
+1. **Axum over Actix-web**: Simpler extractor-based API, excellent tokio integration, composable middleware via Tower.
+2. **rusqlite over sqlx**: We're doing dynamic schema DDL (CREATE TABLE, ALTER TABLE, DROP TABLE) which doesn't benefit from sqlx's compile-time checking. rusqlite's synchronous API is simpler for DDL operations. We wrap it with `tokio::task::spawn_blocking` for async compatibility.
+3. **RS256 JWT**: Local private key signs tokens; public key exposed via JWKS endpoint. The backend only needs the public key for verification.
+4. **Askama templates**: Compile-time checked templates that integrate well with Axum and produce htmx-friendly HTML fragments.
+
+### Directory Structure
+
+```
+.
+├── .github/
+│   └── workflows/
+│       ├── lint.yml
+│       ├── dependency-review.yml
+│       └── e2e.yml
+├── .gitignore
+├── Cargo.toml
+├── Cargo.lock
+├── certs/
+│   └── README.md          # Instructions only; actual keys generated at runtime
+├── src/
+│   ├── main.rs
+│   ├── config.rs
+│   ├── auth/
+│   │   ├── mod.rs
+│   │   ├── jwt.rs          # JWT validation, claims extraction
+│   │   ├── jwks.rs         # JWKS endpoint handler
+│   │   └── middleware.rs   # Axum auth middleware layer
+│   ├── db/
+│   │   ├── mod.rs
+│   │   ├── connection.rs   # SQLite connection pool management
+│   │   ├── schema.rs       # DDL operations (create/drop table, add/drop column)
+│   │   └── queries.rs      # Read operations (list tables, describe table)
+│   ├── handlers/
+│   │   ├── mod.rs
+│   │   ├── auth.rs         # Login page, token exchange
+│   │   ├── tables.rs       # Table CRUD handlers
+│   │   └── columns.rs      # Column CRUD handlers
+│   └── templates/
+│       (Askama templates live in project-root/templates/ per Askama convention)
+├── templates/
+│   ├── base.html
+│   ├── login.html
+│   ├── dashboard.html
+│   ├── table_list.html       # htmx partial
+│   ├── table_detail.html     # htmx partial
+│   ├── column_form.html      # htmx partial
+│   └── table_form.html       # htmx partial
+├── static/
+│   └── htmx.min.js
+├── tests/
+│   └── e2e/
+│       ├── package.json
+│       ├── playwright.config.ts
+│       ├── tsconfig.json
+│       ├── helpers/
+│       │   └── jwt.ts      # JWT token generation for tests
+│       └── specs/
+│           ├── auth.spec.ts
+│           ├── tables.spec.ts
+│           └── columns.spec.ts
+├── scripts/
+│   ├── generate-keys.sh    # Generate RSA key pair for JWT
+│   └── run-e2e.sh          # Build server, start, run tests, stop
+└── docs/
+    └── plans/
+        └── (this file)
+```
+
+---
+
+## Risk Areas
+
+1. **rusqlite + async**: rusqlite is synchronous. Every DB call must be wrapped in `spawn_blocking`. Forgetting this blocks the tokio runtime.
+2. **ALTER TABLE limitations in SQLite**: SQLite doesn't support `DROP COLUMN` before version 3.35.0. Must ensure the bundled SQLite version supports it, or use the `bundled` feature of rusqlite.
+3. **JWT key management**: Private keys must never be committed. The `.gitignore` must exclude `*.pem`, `*.key` files. Test keys should be generated dynamically.
+4. **htmx CSRF**: htmx sends AJAX requests that bypass traditional CSRF protections. Must rely on SameSite=Strict cookies and same-origin checks.
+5. **SQL injection via table/column names**: Since we're building DDL dynamically, table and column names must be strictly validated (alphanumeric + underscore only) to prevent SQL injection.
+6. **Playwright test flakiness**: Server startup race condition. Tests must wait for server health check before running.
+7. **Super-linter configuration**: May flag Rust code style differently than `cargo clippy`. Need to configure linter rules to avoid false positives.
+8. **Askama template compile-time errors**: Templates must be syntactically correct before integration - errors fail the entire build.
+9. **CI build times**: Rust compilation is slow - cargo cache action is critical for acceptable CI performance.
+10. **openssl dependency**: Required for key generation/JWKS parsing - must be available in CI runner (ubuntu-latest includes it).
+
+---
+
+## Implementation Tasks
+
+### Task CRUISE-001: Project Scaffolding and .gitignore
+
+**Files:**
+- Create: `.gitignore`
+- Create: `Cargo.toml`
+- Create: `src/main.rs` (minimal hello-world)
+
+**Step 1: Create comprehensive .gitignore**
+
+```gitignore
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Keys and credentials
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.der
+certs/*.pem
+certs/*.key
+certs/*.crt
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# SQLite databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Log files
+*.log
+logs/
+
+# OS files - macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+
+# OS files - Windows
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# OS files - Linux
+*~
+
+# Editor/IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+.project
+.classpath
+.settings/
+
+# Node.js (for Playwright tests)
+node_modules/
+tests/e2e/node_modules/
+tests/e2e/test-results/
+tests/e2e/playwright-report/
+
+# Fork-join directories
+.fork-join/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.orig
+```
+
+**Step 2: Create minimal Cargo.toml**
+
+```toml
+[package]
+name = "sqlite-editor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+```
+
+**Step 3: Create minimal src/main.rs**
+
+```rust
+use axum::{routing::get, Router};
+
+#[tokio::main]
+async fn main() {
+    let app = Router::new().route("/healthz", get(|| async { "ok" }));
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    println!("Listening on http://0.0.0.0:3000");
+    axum::serve(listener, app).await.unwrap();
+}
+```
+
+**Step 4: Verify it compiles**
+
+Run: `cargo build`
+Expected: Successful compilation
+
+**Step 5: Commit**
+
+```bash
+git add .gitignore Cargo.toml Cargo.lock src/main.rs
+git commit -m "feat: project scaffolding with .gitignore and minimal Axum server"
+```
+
+---
+
+### Task CRUISE-002: JWT Key Generation and JWKS Endpoint
+
+**Files:**
+- Create: `scripts/generate-keys.sh`
+- Create: `certs/README.md`
+- Create: `src/auth/mod.rs`
+- Create: `src/auth/jwt.rs`
+- Create: `src/auth/jwks.rs`
+- Modify: `Cargo.toml` (add jsonwebtoken, serde, serde_json, base64, chrono)
+- Modify: `src/main.rs` (add JWKS route)
+
+**Step 1: Create key generation script**
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+CERT_DIR="${1:-certs}"
+mkdir -p "$CERT_DIR"
+
+# Generate RSA 2048-bit private key
+openssl genrsa -out "$CERT_DIR/private.pem" 2048
+
+# Extract public key
+openssl rsa -in "$CERT_DIR/private.pem" -pubout -out "$CERT_DIR/public.pem"
+
+echo "Keys generated in $CERT_DIR/"
+echo "  private.pem - KEEP SECRET, used to sign JWT tokens"
+echo "  public.pem  - Safe to distribute, used to verify JWT tokens"
+```
+
+**Step 2: Create certs/README.md**
+
+```markdown
+# JWT Signing Keys
+
+Run `../scripts/generate-keys.sh` to generate keys.
+Keys are .gitignored and must be generated locally.
+```
+
+**Step 3: Add dependencies to Cargo.toml**
+
+```toml
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+jsonwebtoken = "9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+```
+
+**Step 4: Write JWT validation module with tests**
+
+Create `src/auth/jwt.rs`:
+
+```rust
+use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Claims {
+    pub sub: String,
+    pub exp: usize,
+    pub iat: usize,
+}
+
+pub fn validate_token(token: &str, public_key_pem: &[u8]) -> Result<Claims, jsonwebtoken::errors::Error> {
+    let key = DecodingKey::from_rsa_pem(public_key_pem)?;
+    let mut validation = Validation::new(Algorithm::RS256);
+    validation.validate_exp = true;
+    let token_data = decode::<Claims>(token, &key, &validation)?;
+    Ok(token_data.claims)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use jsonwebtoken::{encode, EncodingKey, Header};
+    use std::process::{Command, Stdio};
+    use std::io::Write;
+
+    fn generate_test_keypair() -> (Vec<u8>, Vec<u8>) {
+        let output = Command::new("openssl")
+            .args(["genrsa", "2048"])
+            .output()
+            .expect("openssl required for tests");
+        let private_pem = output.stdout;
+
+        let mut child = Command::new("openssl")
+            .args(["rsa", "-pubout"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("openssl required for tests");
+        child.stdin.as_mut().unwrap().write_all(&private_pem).unwrap();
+        let output = child.wait_with_output().expect("openssl failed");
+        let public_pem = output.stdout;
+
+        (private_pem, public_pem)
+    }
+
+    #[test]
+    fn test_validate_valid_token() {
+        let (private_pem, public_pem) = generate_test_keypair();
+        let claims = Claims {
+            sub: "testuser".to_string(),
+            exp: (chrono::Utc::now() + chrono::Duration::hours(1)).timestamp() as usize,
+            iat: chrono::Utc::now().timestamp() as usize,
+        };
+        let header = Header::new(Algorithm::RS256);
+        let key = EncodingKey::from_rsa_pem(&private_pem).unwrap();
+        let token = encode(&header, &claims, &key).unwrap();
+
+        let result = validate_token(&token, &public_pem);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().sub, "testuser");
+    }
+
+    #[test]
+    fn test_reject_expired_token() {
+        let (private_pem, public_pem) = generate_test_keypair();
+        let claims = Claims {
+            sub: "testuser".to_string(),
+            exp: (chrono::Utc::now() - chrono::Duration::hours(1)).timestamp() as usize,
+            iat: (chrono::Utc::now() - chrono::Duration::hours(2)).timestamp() as usize,
+        };
+        let header = Header::new(Algorithm::RS256);
+        let key = EncodingKey::from_rsa_pem(&private_pem).unwrap();
+        let token = encode(&header, &claims, &key).unwrap();
+
+        let result = validate_token(&token, &public_pem);
+        assert!(result.is_err());
+    }
+}
+```
+
+**Step 5: Run tests**
+
+Run: `cargo test --lib auth::jwt`
+Expected: 2 tests pass
+
+**Step 6: Create JWKS endpoint handler**
+
+Create `src/auth/jwks.rs` - parses RSA public key PEM and serves as JWK Set at `/.well-known/jwks.json`. Use openssl CLI to extract modulus and exponent, encode as base64url. See full implementation in directory structure section.
+
+**Step 7: Create auth/mod.rs**
+
+```rust
+pub mod jwt;
+pub mod jwks;
+pub mod middleware;
+```
+
+**Step 8: Wire JWKS into main.rs**
+
+Add `/.well-known/jwks.json` route pointing to `auth::jwks::jwks_handler` with public PEM as state.
+
+**Step 9: Commit**
+
+```bash
+git add scripts/ certs/README.md src/auth/ Cargo.toml Cargo.lock src/main.rs
+git commit -m "feat: JWT validation and JWKS .well-known endpoint"
+```
+
+---
+
+### Task CRUISE-003: JWT Auth Middleware
+
+**Files:**
+- Create: `src/auth/middleware.rs`
+- Modify: `src/auth/mod.rs`
+
+**Step 1: Create auth middleware**
+
+`src/auth/middleware.rs` - Axum middleware that:
+1. Extracts JWT from `Authorization: Bearer <token>` header
+2. Falls back to extracting from `token=<value>` cookie
+3. Validates token using `validate_token`
+4. Injects `Claims` into request extensions
+5. Returns 401 if no valid token found
+
+```rust
+use axum::{
+    extract::{Request, State},
+    http::StatusCode,
+    middleware::Next,
+    response::Response,
+};
+use super::jwt::{validate_token, Claims};
+
+#[derive(Clone)]
+pub struct AuthState {
+    pub public_pem: Vec<u8>,
+}
+
+pub async fn require_auth(
+    State(auth_state): State<AuthState>,
+    mut request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let token = request
+        .headers()
+        .get("Authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .or_else(|| {
+            request.headers()
+                .get("Cookie")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|cookies| {
+                    cookies.split(';').find_map(|c| c.trim().strip_prefix("token="))
+                })
+        })
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    let claims = validate_token(token, &auth_state.public_pem)
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    request.extensions_mut().insert(claims);
+    Ok(next.run(request).await)
+}
+```
+
+**Step 2: Verify it compiles**
+
+Run: `cargo build`
+Expected: Compiles successfully
+
+**Step 3: Commit**
+
+```bash
+git add src/auth/
+git commit -m "feat: JWT auth middleware with Bearer and cookie support"
+```
+
+---
+
+### Task CRUISE-004: SQLite Database Layer
+
+**Files:**
+- Create: `src/db/mod.rs`
+- Create: `src/db/connection.rs`
+- Create: `src/db/schema.rs`
+- Create: `src/db/queries.rs`
+- Modify: `Cargo.toml` (add rusqlite)
+
+**Step 1: Add rusqlite to Cargo.toml**
+
+```toml
+rusqlite = { version = "0.32", features = ["bundled"] }
+```
+
+The `bundled` feature ensures SQLite 3.45+ is included, which supports `ALTER TABLE DROP COLUMN`.
+
+**Step 2: Write identifier validation**
+
+Critical for SQL injection prevention. Only allows `[a-zA-Z_][a-zA-Z0-9_]*` and rejects SQLite reserved words.
+
+**Step 3: Write DDL operations with tests**
+
+`src/db/schema.rs` - Functions:
+- `validate_identifier(name: &str) -> Result<(), String>` - SQL injection prevention
+- `validate_column_type(col_type: &str) -> Result<(), String>` - whitelist: TEXT, INTEGER, REAL, BLOB, NUMERIC
+- `create_table(conn, table_name, columns: &[(String, String)]) -> Result<(), String>`
+- `drop_table(conn, table_name) -> Result<(), String>`
+- `add_column(conn, table_name, col_name, col_type) -> Result<(), String>`
+- `drop_column(conn, table_name, col_name) -> Result<(), String>`
+
+Unit tests:
+- `test_create_and_drop_table` - create table, verify in sqlite_master, drop, verify gone
+- `test_add_and_drop_column` - add column, verify pragma_table_info count, drop, verify
+- `test_validate_identifier_rejects_sql_injection` - semicolons, empty, numeric start
+- `test_validate_identifier_rejects_reserved_words` - "select", "table"
+- `test_invalid_column_type_rejected` - "VARCHAR(255)" rejected
+
+**Step 4: Write query helpers**
+
+`src/db/queries.rs` - Functions:
+- `list_tables(conn) -> Vec<TableInfo>` - excludes sqlite_* internal tables
+- `describe_table(conn, table_name) -> Vec<ColumnInfo>` - uses PRAGMA table_info
+
+**Step 5: Write connection pool**
+
+`src/db/connection.rs` - `DbPool` struct wrapping `Mutex<Connection>` with `with_conn` method for safe access.
+
+**Step 6: Run all tests**
+
+Run: `cargo test`
+Expected: All tests pass
+
+**Step 7: Commit**
+
+```bash
+git add src/db/ Cargo.toml Cargo.lock
+git commit -m "feat: SQLite database layer with DDL operations and query helpers"
+```
+
+---
+
+### Task CRUISE-005: Askama Templates and htmx Static Assets
+
+**Files:**
+- Create: `templates/base.html`
+- Create: `templates/login.html`
+- Create: `templates/dashboard.html`
+- Create: `templates/table_list.html`
+- Create: `templates/table_detail.html`
+- Create: `static/htmx.min.js`
+- Modify: `Cargo.toml` (add askama, askama_axum)
+
+**Step 1: Add template dependencies**
+
+```toml
+askama = "0.12"
+askama_axum = "0.4"
+```
+
+**Step 2: Download htmx**
+
+Run: `mkdir -p static && curl -o static/htmx.min.js https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js`
+
+**Step 3: Create base template** - HTML layout with htmx script, basic CSS, nav structure.
+
+**Step 4: Create login template** - Extends base, token input form, optional error message.
+
+**Step 5: Create dashboard template** - Extends base, shows logged-in user, `hx-get="/tables"` container.
+
+**Step 6: Create table_list.html partial** - htmx partial: create table form (`hx-post="/tables"`), table list with delete buttons (`hx-delete` with `hx-confirm`), links to table detail (`hx-get="/tables/{name}"`).
+
+**Step 7: Create table_detail.html partial** - htmx partial: add column form (`hx-post`), column list with drop buttons (`hx-delete` with `hx-confirm`).
+
+**Step 8: Commit**
+
+```bash
+git add templates/ static/ Cargo.toml Cargo.lock
+git commit -m "feat: Askama templates and htmx static assets"
+```
+
+---
+
+### Task CRUISE-006: HTTP Handlers and Full Router Wiring
+
+**Files:**
+- Create: `src/handlers/mod.rs`
+- Create: `src/handlers/auth.rs`
+- Create: `src/handlers/tables.rs`
+- Create: `src/handlers/columns.rs`
+- Create: `src/config.rs`
+- Modify: `src/main.rs` (full router wiring)
+- Modify: `Cargo.toml` (add tower-http, cookie)
+
+**Step 1: Add dependencies**
+
+```toml
+tower-http = { version = "0.6", features = ["fs"] }
+```
+
+**Step 2: Create config.rs** - Read PORT, DB_PATH, PUBLIC_KEY_PATH, PRIVATE_KEY_PATH from env vars with defaults.
+
+**Step 3: Create auth handlers**
+
+`src/handlers/auth.rs`:
+- `login_page()` - renders login.html template
+- `login_submit(Form<LoginForm>)` - validates JWT, sets HttpOnly SameSite=Strict cookie, redirects to /
+- `logout()` - clears cookie, redirects to /login
+- `dashboard(Request)` - extracts Claims from extensions, renders dashboard.html
+
+**Step 4: Create table handlers**
+
+`src/handlers/tables.rs`:
+- `list_tables()` - renders table_list.html partial
+- `create_table(Form)` - calls schema::create_table, re-renders table list
+- `delete_table(Path)` - calls schema::drop_table, re-renders table list
+- `show_table(Path)` - renders table_detail.html partial
+
+**Step 5: Create column handlers**
+
+`src/handlers/columns.rs`:
+- `add_column(Path, Form)` - calls schema::add_column, re-renders table detail
+- `drop_column(Path)` - calls schema::drop_column, re-renders table detail
+
+**Step 6: Wire main.rs**
+
+Routes:
+- Protected (behind auth middleware): `GET /`, `GET /tables`, `POST /tables`, `DELETE /tables/{name}`, `GET /tables/{name}`, `POST /tables/{name}/columns`, `DELETE /tables/{name}/columns/{col}`
+- Public: `GET /login`, `POST /login`, `GET /logout`, `GET /healthz`, `GET /.well-known/jwks.json`
+- Static: `GET /static/*` via ServeDir
+
+**Step 7: Build and verify**
+
+Run: `cargo build`
+Expected: Compiles successfully
+
+**Step 8: Commit**
+
+```bash
+git add src/ Cargo.toml Cargo.lock
+git commit -m "feat: HTTP handlers, router, and full application wiring"
+```
+
+---
+
+### Task CRUISE-007: Playwright E2E Test Infrastructure
+
+**Files:**
+- Create: `tests/e2e/package.json`
+- Create: `tests/e2e/playwright.config.ts`
+- Create: `tests/e2e/tsconfig.json`
+- Create: `tests/e2e/helpers/jwt.ts`
+- Create: `scripts/run-e2e.sh`
+
+**Step 1: Create package.json**
+
+```json
+{
+  "name": "sqlite-editor-e2e",
+  "private": true,
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.50.0",
+    "jsonwebtoken": "^9.0.0"
+  }
+}
+```
+
+**Step 2: Create playwright.config.ts**
+
+- testDir: `./specs`
+- baseURL: `http://localhost:3000`
+- webServer: `cd ../.. && cargo run` on port 3000 with 120s timeout
+- Reporters: list, html (playwright-report/), json (test-results/results.json)
+
+**Step 3: Create JWT test helper** (`tests/e2e/helpers/jwt.ts`)
+
+- `generateToken(sub, expiresInSeconds)` - signs JWT with RS256 using private key
+- `generateExpiredToken(sub)` - creates already-expired token
+- `ensureKeys()` - runs generate-keys.sh if keys don't exist
+
+Note: Uses `child_process.execFileSync` (not `execSync`) for safety - only runs the key generation script with hardcoded paths, no user input.
+
+**Step 4: Create run-e2e.sh** - generates keys, installs npm deps, installs Playwright chromium, runs tests.
+
+**Step 5: Install and verify**
+
+Run: `cd tests/e2e && npm install && npx playwright install chromium`
+
+**Step 6: Commit**
+
+```bash
+git add tests/e2e/ scripts/
+git commit -m "feat: Playwright E2E test infrastructure with JWT helper"
+```
+
+---
+
+### Task CRUISE-008: E2E Test Specs
+
+**Files:**
+- Create: `tests/e2e/specs/auth.spec.ts`
+- Create: `tests/e2e/specs/tables.spec.ts`
+- Create: `tests/e2e/specs/columns.spec.ts`
+
+**Step 1: Write auth.spec.ts**
+
+Tests:
+- `should show login page when not authenticated` - GET / shows token input
+- `should login with valid JWT token` - 5-minute token, verify dashboard shows username
+- `should reject expired JWT token` - expired token shows error message
+- `should reject invalid JWT token` - garbage string shows error
+- `should logout successfully` - login, click logout, verify login page shown
+- `.well-known/jwks.json returns valid JWKS` - API request, verify kty/alg/n/e fields
+
+**Step 2: Write tables.spec.ts**
+
+Tests (each test logs in with fresh JWT first):
+- `should create a new table` - fill form, submit, verify table appears in list
+- `should delete a table` - create table, accept confirm dialog, click delete, verify gone
+- `should show table details when clicking table name` - create table, click name, verify detail view
+
+**Step 3: Write columns.spec.ts**
+
+Tests (each test logs in and creates a table first):
+- `should add a column to a table` - fill column form, submit, verify column appears
+- `should drop a column from a table` - add column, accept confirm, click drop, verify gone
+- `should show correct column types` - add TEXT, INTEGER, REAL columns, verify types shown
+
+**Step 4: Run tests**
+
+Run: `cd tests/e2e && npx playwright test`
+Expected: All tests pass
+
+**Step 5: Commit**
+
+```bash
+git add tests/e2e/specs/
+git commit -m "feat: E2E test specs for auth, tables, and columns"
+```
+
+---
+
+### Task CRUISE-009: GitHub Actions - Lint Workflow
+
+**Files:**
+- Create: `.github/workflows/lint.yml`
+
+**Step 1: Create lint workflow**
+
+```yaml
+name: Lint
+
+on:
+  pull_request:
+    branches: ["*"]
+
+permissions:
+  contents: read
+  packages: read
+  statuses: write
+
+jobs:
+  lint:
+    name: Super-Linter
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Super-Linter
+        uses: super-linter/super-linter@v7
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VALIDATE_ALL_CODEBASE: false
+          DEFAULT_BRANCH: main
+          VALIDATE_RUST_2021: true
+          VALIDATE_RUST_CLIPPY: true
+          VALIDATE_TYPESCRIPT_ES: true
+          VALIDATE_YAML: true
+          VALIDATE_HTML: true
+          VALIDATE_BASH: true
+          VALIDATE_SHELL_SHFMT: true
+```
+
+**Step 2: Commit**
+
+```bash
+git add .github/workflows/lint.yml
+git commit -m "ci: add Super-Linter workflow for PRs"
+```
+
+---
+
+### Task CRUISE-010: GitHub Actions - Dependency Review Workflow
+
+**Files:**
+- Create: `.github/workflows/dependency-review.yml`
+
+**Step 1: Create dependency review workflow**
+
+```yaml
+name: Dependency Review
+
+on:
+  pull_request:
+    branches: ["*"]
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: moderate
+```
+
+**Step 2: Commit**
+
+```bash
+git add .github/workflows/dependency-review.yml
+git commit -m "ci: add dependency review workflow for PRs"
+```
+
+---
+
+### Task CRUISE-011: GitHub Actions - E2E Test Workflow
+
+**Files:**
+- Create: `.github/workflows/e2e.yml`
+
+**Step 1: Create E2E test workflow**
+
+```yaml
+name: E2E Tests
+
+on:
+  pull_request:
+    branches: ["*"]
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: Playwright E2E Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build Rust server
+        run: cargo build --release
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install test dependencies
+        working-directory: tests/e2e
+        run: npm ci
+
+      - name: Install Playwright browsers
+        working-directory: tests/e2e
+        run: npx playwright install --with-deps chromium
+
+      - name: Generate JWT keys
+        run: bash scripts/generate-keys.sh
+
+      - name: Run E2E tests
+        working-directory: tests/e2e
+        run: npx playwright test
+        env:
+          CI: true
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: tests/e2e/playwright-report/
+          retention-days: 30
+
+      - name: Upload test results JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: tests/e2e/test-results/
+          retention-days: 30
+```
+
+**Step 2: Commit**
+
+```bash
+git add .github/workflows/e2e.yml
+git commit -m "ci: add Playwright E2E test workflow with artifact upload"
+```
+
+---
+
+### Task CRUISE-012: Integration Testing and Final Verification
+
+**Files:**
+- Modify: various files as needed for bug fixes
+
+**Step 1: Generate keys and build**
+
+```bash
+bash scripts/generate-keys.sh
+cargo build
+```
+Expected: Successful build
+
+**Step 2: Verify endpoints**
+
+```bash
+cargo run &
+sleep 2
+curl http://localhost:3000/healthz          # expect: "ok"
+curl http://localhost:3000/.well-known/jwks.json  # expect: valid JWKS JSON
+kill %1
+```
+
+**Step 3: Run unit tests**
+
+Run: `cargo test`
+Expected: All tests pass
+
+**Step 4: Run E2E tests**
+
+Run: `cd tests/e2e && npx playwright test`
+Expected: All E2E tests pass
+
+**Step 5: Fix any issues, re-run**
+
+**Step 6: Final commit**
+
+```bash
+git add -A
+git commit -m "fix: integration fixes from full E2E verification"
+```
+
+---
+
+## Task Dependency Graph
+
+```
+CRUISE-001 (Scaffolding + .gitignore)
+    ├── CRUISE-002 (JWT + JWKS)
+    │       └── CRUISE-003 (Auth Middleware)
+    ├── CRUISE-004 (SQLite DB Layer)
+    ├── CRUISE-005 (Templates + htmx)
+    ├── CRUISE-007 (E2E Test Setup)
+    ├── CRUISE-009 (Lint CI)
+    └── CRUISE-010 (Dep Review CI)
+
+CRUISE-006 (Handlers + Router) ← depends on 002, 003, 004, 005
+CRUISE-008 (E2E Test Specs) ← depends on 006, 007
+CRUISE-011 (E2E CI) ← depends on 007, 008
+CRUISE-012 (Integration) ← depends on all above
+```
+
+**Parallelization opportunities after CRUISE-001:**
+- CRUISE-002+003, CRUISE-004, CRUISE-005, CRUISE-007, CRUISE-009, CRUISE-010 can all run in parallel.
+
+---
+
+```json
+{
+  "title": "SQLite Database Editor Web Application",
+  "overview": "Rust web app with Axum backend, htmx frontend, JWT auth (RS256 with JWKS endpoint), SQLite schema management (create/drop tables, add/drop columns), Playwright E2E tests, and GitHub Actions CI/CD (super-linter + dependency review).",
+  "spawn_instances": [
+    {
+      "id": "SPAWN-001",
+      "name": "Project Foundation",
+      "use_spawn_team": false,
+      "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 300",
+      "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+      "task_ids": ["CRUISE-001"]
+    },
+    {
+      "id": "SPAWN-002",
+      "name": "Authentication System",
+      "use_spawn_team": true,
+      "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 600",
+      "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+      "task_ids": ["CRUISE-002", "CRUISE-003"]
+    },
+    {
+      "id": "SPAWN-003",
+      "name": "Database Layer",
+      "use_spawn_team": true,
+      "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 600",
+      "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+      "task_ids": ["CRUISE-004"]
+    },
+    {
+      "id": "SPAWN-004",
+      "name": "Frontend Templates",
+      "use_spawn_team": false,
+      "cli_params": "claude --model haiku --allowedTools Read,Write,Edit,Bash,Glob --timeout 300",
+      "permissions": ["Read", "Write", "Edit", "Bash", "Glob"],
+      "task_ids": ["CRUISE-005"]
+    },
+    {
+      "id": "SPAWN-005",
+      "name": "Application Wiring",
+      "use_spawn_team": true,
+      "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 600",
+      "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+      "task_ids": ["CRUISE-006"]
+    },
+    {
+      "id": "SPAWN-006",
+      "name": "E2E Test Infrastructure and Specs",
+      "use_spawn_team": false,
+      "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 600",
+      "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+      "task_ids": ["CRUISE-007", "CRUISE-008"]
+    },
+    {
+      "id": "SPAWN-007",
+      "name": "CI/CD Workflows",
+      "use_spawn_team": false,
+      "cli_params": "claude --model haiku --allowedTools Read,Write,Edit --timeout 180",
+      "permissions": ["Read", "Write", "Edit"],
+      "task_ids": ["CRUISE-009", "CRUISE-010", "CRUISE-011"]
+    },
+    {
+      "id": "SPAWN-008",
+      "name": "Integration and Verification",
+      "use_spawn_team": true,
+      "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 900",
+      "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+      "task_ids": ["CRUISE-012"]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "CRUISE-001",
+      "subject": "Project Scaffolding and .gitignore",
+      "description": "Create comprehensive .gitignore (keys, credentials, temp files, build artifacts, node_modules, editor/IDE files, OS files for mac/windows/linux, .env, logs, .fork-join), minimal Cargo.toml with axum+tokio, and hello-world main.rs with /healthz endpoint. Verify it compiles.",
+      "blocked_by": [],
+      "complexity": "low",
+      "acceptance_criteria": [
+        ".gitignore covers: *.pem, *.key, *.crt, .env, *.db, *.sqlite, node_modules/, target/, .DS_Store, Thumbs.db, Desktop.ini, .vscode/, .idea/, *.log, .fork-join/, editor swap files, OS files for mac/windows/linux",
+        "Cargo.toml has axum and tokio dependencies",
+        "src/main.rs has /healthz endpoint returning 'ok'",
+        "cargo build succeeds"
+      ],
+      "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+      "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 300",
+      "spawn_instance": "SPAWN-001"
+    },
+    {
+      "id": "CRUISE-002",
+      "subject": "JWT Key Generation and JWKS Endpoint",
+      "description": "Create RSA key generation script (scripts/generate-keys.sh using openssl), JWT validation module (src/auth/jwt.rs with RS256 support), and JWKS endpoint handler (src/auth/jwks.rs) that serves public key at /.well-known/jwks.json. Add jsonwebtoken, serde, serde_json, base64, chrono crate dependencies. Include unit tests for token validation (valid token, expired token).",
+      "blocked_by": ["CRUISE-001"],
+      "complexity": "high",
+      "acceptance_criteria": [
+        "scripts/generate-keys.sh generates RSA 2048-bit key pair",
+        "JWT validation works with RS256 algorithm",
+        "Unit test: valid token accepted",
+        "Unit test: expired token rejected",
+        "/.well-known/jwks.json returns valid JWK Set with RSA public key",
+        "Private keys excluded by .gitignore"
+      ],
+      "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+      "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 600",
+      "spawn_instance": "SPAWN-002"
+    },
+    {
+      "id": "CRUISE-003",
+      "subject": "JWT Auth Middleware",
+      "description": "Create Axum middleware (src/auth/middleware.rs) that extracts JWT from Authorization Bearer header or cookie, validates it, and injects Claims into request extensions. Unauthenticated requests return 401.",
+      "blocked_by": ["CRUISE-002"],
+      "complexity": "medium",
+      "acceptance_criteria": [
+        "Middleware extracts token from Authorization: Bearer header",
+        "Middleware extracts token from cookie named 'token'",
+        "Valid token: Claims injected into request extensions",
+        "Invalid/missing token: 401 Unauthorized returned",
+        "Code compiles successfully"
+      ],
+      "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+      "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 600",
+      "spawn_instance": "SPAWN-002"
+    },
+    {
+      "id": "CRUISE-004",
+      "subject": "SQLite Database Layer",
+      "description": "Create database connection pool (src/db/connection.rs with Mutex<Connection>), DDL operations (src/db/schema.rs: create_table, drop_table, add_column, drop_column with identifier validation to prevent SQL injection), and query helpers (src/db/queries.rs: list_tables, describe_table). Use rusqlite with bundled feature for SQLite 3.35+ (DROP COLUMN support). Include comprehensive unit tests.",
+      "blocked_by": ["CRUISE-001"],
+      "complexity": "high",
+      "acceptance_criteria": [
+        "rusqlite with bundled feature in Cargo.toml",
+        "validate_identifier prevents SQL injection (alphanumeric + underscore only, rejects reserved words)",
+        "create_table and drop_table work correctly",
+        "add_column and drop_column work correctly",
+        "list_tables returns all user tables (excludes sqlite_* internal tables)",
+        "describe_table returns column info (name, type, notnull, pk)",
+        "Unit tests pass for all operations including injection attempts"
+      ],
+      "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+      "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 600",
+      "spawn_instance": "SPAWN-003"
+    },
+    {
+      "id": "CRUISE-005",
+      "subject": "Askama Templates and htmx Static Assets",
+      "description": "Create Askama HTML templates: base.html (layout with htmx script), login.html (token input form), dashboard.html (nav + table list container), table_list.html (htmx partial with create/delete), table_detail.html (htmx partial with add/drop columns). Download htmx.min.js to static/. Add askama and askama_axum dependencies.",
+      "blocked_by": ["CRUISE-001"],
+      "complexity": "medium",
+      "acceptance_criteria": [
+        "All templates use Askama syntax and extend base.html",
+        "htmx attributes used for dynamic table/column CRUD (hx-get, hx-post, hx-delete, hx-target, hx-swap, hx-confirm)",
+        "Login form accepts JWT token input",
+        "Dashboard shows logged-in user and table list",
+        "Table list has create and delete actions",
+        "Table detail has add column and drop column actions",
+        "htmx.min.js present in static/"
+      ],
+      "permissions": ["Read", "Write", "Edit", "Bash", "Glob"],
+      "cli_params": "claude --model haiku --allowedTools Read,Write,Edit,Bash,Glob --timeout 300",
+      "spawn_instance": "SPAWN-004"
+    },
+    {
+      "id": "CRUISE-006",
+      "subject": "HTTP Handlers and Full Router Wiring",
+      "description": "Create all HTTP handlers: auth handlers (login page, login POST with cookie, logout, dashboard), table handlers (list, create, delete, show detail), column handlers (add, drop). Create config.rs for env-based configuration. Wire everything in main.rs: protected routes behind auth middleware, public routes (login, JWKS, health), static file serving via tower-http ServeDir. Add tower-http dependency.",
+      "blocked_by": ["CRUISE-002", "CRUISE-003", "CRUISE-004", "CRUISE-005"],
+      "complexity": "high",
+      "acceptance_criteria": [
+        "Login page renders at GET /login",
+        "POST /login validates JWT and sets HttpOnly SameSite=Strict cookie",
+        "GET /logout clears cookie and redirects to /login",
+        "GET / shows dashboard (protected)",
+        "GET /tables returns table list partial (protected)",
+        "POST /tables creates table (protected)",
+        "DELETE /tables/{name} drops table (protected)",
+        "GET /tables/{name} returns table detail partial (protected)",
+        "POST /tables/{name}/columns adds column (protected)",
+        "DELETE /tables/{name}/columns/{col} drops column (protected)",
+        "GET /static/* serves static files",
+        "cargo build succeeds"
+      ],
+      "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+      "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 600",
+      "spawn_instance": "SPAWN-005"
+    },
+    {
+      "id": "CRUISE-007",
+      "subject": "Playwright E2E Test Infrastructure",
+      "description": "Create tests/e2e/ with package.json (playwright + jsonwebtoken deps), playwright.config.ts (webServer pointing to cargo run, JSON and HTML reporters), tsconfig.json, JWT test helper (generates valid/expired RS256 tokens using private key via execFileSync), and run-e2e.sh script that generates keys, installs deps, runs tests.",
+      "blocked_by": ["CRUISE-001"],
+      "complexity": "medium",
+      "acceptance_criteria": [
+        "package.json has @playwright/test and jsonwebtoken dependencies",
+        "playwright.config.ts configures webServer to start Rust server with 120s timeout",
+        "JSON reporter outputs to test-results/results.json",
+        "JWT helper generates valid RS256 tokens with configurable expiry",
+        "JWT helper generates expired tokens for negative testing",
+        "run-e2e.sh generates keys, installs deps, runs tests",
+        "npm install succeeds in tests/e2e/"
+      ],
+      "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+      "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 600",
+      "spawn_instance": "SPAWN-006"
+    },
+    {
+      "id": "CRUISE-008",
+      "subject": "E2E Test Specs",
+      "description": "Write Playwright test specs: auth.spec.ts (login with valid JWT, reject expired JWT, reject invalid JWT, logout, JWKS endpoint), tables.spec.ts (create table, delete table, view table details), columns.spec.ts (add column, drop column, verify column types). All tests use short-lived (5-min) JWT tokens.",
+      "blocked_by": ["CRUISE-006", "CRUISE-007"],
+      "complexity": "high",
+      "acceptance_criteria": [
+        "Auth tests: valid login, expired token rejection, invalid token rejection, logout, JWKS endpoint validation",
+        "Table tests: create table, delete table with confirmation dialog, view table detail",
+        "Column tests: add column, drop column with confirmation dialog, verify TEXT/INTEGER/REAL column types",
+        "All tests use programmatically-generated short-lived (300s) JWT tokens",
+        "All tests pass when run against the application"
+      ],
+      "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+      "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 600",
+      "spawn_instance": "SPAWN-006"
+    },
+    {
+      "id": "CRUISE-009",
+      "subject": "GitHub Actions Lint Workflow",
+      "description": "Create .github/workflows/lint.yml using super-linter/super-linter@v7. Triggered on all PRs. Validates Rust (clippy), TypeScript, YAML, HTML, and shell scripts. Only validates changed files (VALIDATE_ALL_CODEBASE: false).",
+      "blocked_by": ["CRUISE-001"],
+      "complexity": "low",
+      "acceptance_criteria": [
+        "Workflow triggers on pull_request to any branch",
+        "Uses super-linter/super-linter@v7",
+        "VALIDATE_ALL_CODEBASE set to false",
+        "Validates: Rust clippy, TypeScript, YAML, HTML, Bash",
+        "Correct permissions set (contents: read, packages: read, statuses: write)"
+      ],
+      "permissions": ["Read", "Write", "Edit"],
+      "cli_params": "claude --model haiku --allowedTools Read,Write,Edit --timeout 180",
+      "spawn_instance": "SPAWN-007"
+    },
+    {
+      "id": "CRUISE-010",
+      "subject": "GitHub Actions Dependency Review Workflow",
+      "description": "Create .github/workflows/dependency-review.yml using actions/dependency-review-action@v4. Triggered on all PRs. Fails on moderate+ severity vulnerabilities.",
+      "blocked_by": ["CRUISE-001"],
+      "complexity": "low",
+      "acceptance_criteria": [
+        "Workflow triggers on pull_request to any branch",
+        "Uses actions/dependency-review-action@v4",
+        "fail-on-severity set to moderate",
+        "Correct permissions (contents: read)"
+      ],
+      "permissions": ["Read", "Write", "Edit"],
+      "cli_params": "claude --model haiku --allowedTools Read,Write,Edit --timeout 180",
+      "spawn_instance": "SPAWN-007"
+    },
+    {
+      "id": "CRUISE-011",
+      "subject": "GitHub Actions E2E Test Workflow",
+      "description": "Create .github/workflows/e2e.yml that builds Rust server, installs Node.js + Playwright, generates JWT keys, runs E2E tests, and uploads test results (playwright-report/ and test-results/) as artifacts with 30-day retention. Triggered on all PRs. Caches Cargo dependencies.",
+      "blocked_by": ["CRUISE-007", "CRUISE-008"],
+      "complexity": "medium",
+      "acceptance_criteria": [
+        "Workflow triggers on pull_request to any branch",
+        "Installs Rust stable toolchain and caches cargo dependencies",
+        "Builds Rust server in release mode",
+        "Sets up Node.js 20 and installs test dependencies with npm ci",
+        "Generates JWT keys before running tests",
+        "Runs Playwright tests with CI=true",
+        "Uploads playwright-report and test-results as artifacts (always, even on failure)",
+        "Artifact retention set to 30 days"
+      ],
+      "permissions": ["Read", "Write", "Edit"],
+      "cli_params": "claude --model haiku --allowedTools Read,Write,Edit --timeout 180",
+      "spawn_instance": "SPAWN-007"
+    },
+    {
+      "id": "CRUISE-012",
+      "subject": "Integration Testing and Final Verification",
+      "description": "End-to-end verification: generate keys, build server, verify healthz and JWKS endpoints manually via curl, run cargo test (all unit tests), run Playwright E2E tests. Fix any issues found. Ensure no compiler warnings. Final commit.",
+      "blocked_by": ["CRUISE-001", "CRUISE-002", "CRUISE-003", "CRUISE-004", "CRUISE-005", "CRUISE-006", "CRUISE-007", "CRUISE-008", "CRUISE-009", "CRUISE-010", "CRUISE-011"],
+      "complexity": "medium",
+      "acceptance_criteria": [
+        "cargo build succeeds with no warnings",
+        "cargo test passes all unit tests",
+        "/healthz returns 'ok'",
+        "/.well-known/jwks.json returns valid JWKS with RSA key",
+        "All Playwright E2E tests pass (auth, tables, columns)",
+        "All code committed and clean git status"
+      ],
+      "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+      "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 900",
+      "spawn_instance": "SPAWN-008"
+    }
+  ],
+  "risks": [
+    "rusqlite synchronous calls must be wrapped in spawn_blocking for Axum async handlers - forgetting this will block the tokio runtime",
+    "SQLite ALTER TABLE DROP COLUMN requires SQLite 3.35+ - must use rusqlite 'bundled' feature to guarantee this",
+    "SQL injection via dynamically-constructed DDL statements - table/column names must be strictly validated (no quoting, only alphanumeric + underscore)",
+    "JWT private key leakage - .gitignore must exclude *.pem, *.key; tests generate ephemeral keys",
+    "Playwright test flakiness from server startup race condition - playwright.config.ts webServer config handles this but timeout must be sufficient for Rust compilation in CI (120s)",
+    "htmx CSRF vulnerability - hx-* requests bypass traditional form CSRF tokens; relying on SameSite=Strict cookie and same-origin policy",
+    "Super-linter may have different Rust edition expectations - need to configure RUST_EDITION or accept some false positives",
+    "Askama template compile-time errors will fail the entire build - templates must be syntactically correct before integration",
+    "CI build times may be slow due to Rust compilation - cargo cache action is critical for acceptable CI performance",
+    "openssl dependency for key generation and JWKS parsing - must be available in CI runner (ubuntu-latest includes it)"
+  ]
+}
+```
