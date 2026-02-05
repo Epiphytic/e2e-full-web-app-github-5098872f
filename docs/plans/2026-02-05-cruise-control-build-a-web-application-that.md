@@ -478,12 +478,11 @@ git commit -m "feat: JWT auth middleware with Bearer and cookie support"
 
 ---
 
-### Task CRUISE-004: SQLite Database Layer
+### Task CRUISE-004a: SQLite Connection and Query Helpers
 
 **Files:**
 - Create: `src/db/mod.rs`
 - Create: `src/db/connection.rs`
-- Create: `src/db/schema.rs`
 - Create: `src/db/queries.rs`
 - Modify: `Cargo.toml` (add rusqlite)
 
@@ -495,11 +494,41 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 
 The `bundled` feature ensures SQLite 3.45+ is included, which supports `ALTER TABLE DROP COLUMN`.
 
-**Step 2: Write identifier validation**
+**Step 2: Write connection pool**
+
+`src/db/connection.rs` - `DbPool` struct wrapping `Mutex<Connection>` with `with_conn` method for safe access.
+
+**Step 3: Write query helpers**
+
+`src/db/queries.rs` - Functions:
+- `list_tables(conn) -> Vec<TableInfo>` - excludes sqlite_* internal tables
+- `describe_table(conn, table_name) -> Vec<ColumnInfo>` - uses PRAGMA table_info
+
+**Step 4: Run tests**
+
+Run: `cargo test`
+Expected: All tests pass
+
+**Step 5: Commit**
+
+```bash
+git add src/db/ Cargo.toml Cargo.lock
+git commit -m "feat: SQLite connection pool and query helpers"
+```
+
+---
+
+### Task CRUISE-004b: SQLite DDL Operations with Identifier Validation
+
+**Files:**
+- Create: `src/db/schema.rs`
+- Modify: `src/db/mod.rs`
+
+**Step 1: Write identifier validation**
 
 Critical for SQL injection prevention. Only allows `[a-zA-Z_][a-zA-Z0-9_]*` and rejects SQLite reserved words.
 
-**Step 3: Write DDL operations with tests**
+**Step 2: Write DDL operations with tests**
 
 `src/db/schema.rs` - Functions:
 - `validate_identifier(name: &str) -> Result<(), String>` - SQL injection prevention
@@ -516,26 +545,16 @@ Unit tests:
 - `test_validate_identifier_rejects_reserved_words` - "select", "table"
 - `test_invalid_column_type_rejected` - "VARCHAR(255)" rejected
 
-**Step 4: Write query helpers**
-
-`src/db/queries.rs` - Functions:
-- `list_tables(conn) -> Vec<TableInfo>` - excludes sqlite_* internal tables
-- `describe_table(conn, table_name) -> Vec<ColumnInfo>` - uses PRAGMA table_info
-
-**Step 5: Write connection pool**
-
-`src/db/connection.rs` - `DbPool` struct wrapping `Mutex<Connection>` with `with_conn` method for safe access.
-
-**Step 6: Run all tests**
+**Step 3: Run all tests**
 
 Run: `cargo test`
 Expected: All tests pass
 
-**Step 7: Commit**
+**Step 4: Commit**
 
 ```bash
-git add src/db/ Cargo.toml Cargo.lock
-git commit -m "feat: SQLite database layer with DDL operations and query helpers"
+git add src/db/schema.rs src/db/mod.rs
+git commit -m "feat: SQLite DDL operations with SQL injection prevention"
 ```
 
 ---
@@ -1029,22 +1048,24 @@ git commit -m "fix: integration fixes from full E2E verification"
 CRUISE-001 (Scaffolding + .gitignore)
     ├── CRUISE-002 (JWT + JWKS)
     │       └── CRUISE-003 (Auth Middleware)
-    ├── CRUISE-004 (SQLite DB Layer)
+    ├── CRUISE-004a (SQLite Connection + Queries)
+    │       └── CRUISE-004b (SQLite DDL Operations)
     ├── CRUISE-005 (Templates + htmx)
     ├── CRUISE-007 (E2E Test Setup)
     ├── CRUISE-009 (Lint CI)
     └── CRUISE-010 (Dep Review CI)
 
 CRUISE-006a (Auth Handlers + Router Setup) ← depends on 002, 003, 005
-CRUISE-006b (Table/Column Handlers) ← depends on 004, 005, 006a
+CRUISE-006b (Table/Column Handlers) ← depends on 004b, 005, 006a
 CRUISE-008 (E2E Test Specs) ← depends on 006b, 007
 CRUISE-011 (E2E CI) ← depends on 007, 008
 CRUISE-012 (Integration) ← depends on all above
 ```
 
 **Parallelization opportunities after CRUISE-001:**
-- CRUISE-002+003, CRUISE-004, CRUISE-005, CRUISE-007, CRUISE-009, CRUISE-010 can all run in parallel.
-- CRUISE-006a can start as soon as 002, 003, and 005 are complete — without waiting for the Database Layer (004). This reduces the critical path by allowing auth handler development to proceed in parallel with database layer work.
+- CRUISE-002+003, CRUISE-004a, CRUISE-005, CRUISE-007, CRUISE-009, CRUISE-010 can all run in parallel.
+- CRUISE-004b can start as soon as CRUISE-004a completes, allowing focused security review of DDL operations and identifier validation separately from connection/query logic.
+- CRUISE-006a can start as soon as 002, 003, and 005 are complete — without waiting for the Database Layer (004a/004b). This reduces the critical path by allowing auth handler development to proceed in parallel with database layer work.
 
 ---
 
@@ -1075,7 +1096,7 @@ CRUISE-012 (Integration) ← depends on all above
       "use_spawn_team": true,
       "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 600",
       "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
-      "task_ids": ["CRUISE-004"]
+      "task_ids": ["CRUISE-004a", "CRUISE-004b"]
     },
     {
       "id": "SPAWN-004",
@@ -1171,19 +1192,36 @@ CRUISE-012 (Integration) ← depends on all above
       "spawn_instance": "SPAWN-002"
     },
     {
-      "id": "CRUISE-004",
-      "subject": "SQLite Database Layer",
-      "description": "Create database connection pool (src/db/connection.rs with Mutex<Connection>), DDL operations (src/db/schema.rs: create_table, drop_table, add_column, drop_column with identifier validation to prevent SQL injection), and query helpers (src/db/queries.rs: list_tables, describe_table). Use rusqlite with bundled feature for SQLite 3.35+ (DROP COLUMN support). Include comprehensive unit tests.",
+      "id": "CRUISE-004a",
+      "subject": "SQLite Connection and Query Helpers",
+      "description": "Create database connection pool (src/db/connection.rs with Mutex<Connection>) and query helpers (src/db/queries.rs: list_tables, describe_table). Add rusqlite with bundled feature for SQLite 3.35+ (DROP COLUMN support). Include unit tests for connection and query operations.",
       "blocked_by": ["CRUISE-001"],
-      "complexity": "high",
+      "complexity": "medium",
       "acceptance_criteria": [
         "rusqlite with bundled feature in Cargo.toml",
-        "validate_identifier prevents SQL injection (alphanumeric + underscore only, rejects reserved words)",
-        "create_table and drop_table work correctly",
-        "add_column and drop_column work correctly",
+        "DbPool wraps Mutex<Connection> with safe with_conn access method",
         "list_tables returns all user tables (excludes sqlite_* internal tables)",
         "describe_table returns column info (name, type, notnull, pk)",
-        "Unit tests pass for all operations including injection attempts"
+        "Unit tests pass for connection pool and query helpers"
+      ],
+      "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+      "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 600",
+      "spawn_instance": "SPAWN-003"
+    },
+    {
+      "id": "CRUISE-004b",
+      "subject": "SQLite DDL Operations with Identifier Validation",
+      "description": "Create DDL operations (src/db/schema.rs: create_table, drop_table, add_column, drop_column) with identifier validation to prevent SQL injection. This is security-sensitive code requiring careful validation of all user-provided identifiers and column types. Include comprehensive unit tests covering both valid operations and injection attempts.",
+      "blocked_by": ["CRUISE-004a"],
+      "complexity": "high",
+      "acceptance_criteria": [
+        "validate_identifier prevents SQL injection (alphanumeric + underscore only, rejects reserved words)",
+        "validate_column_type whitelists only TEXT, INTEGER, REAL, BLOB, NUMERIC",
+        "create_table and drop_table work correctly",
+        "add_column and drop_column work correctly",
+        "Unit tests pass for all DDL operations",
+        "Unit tests cover SQL injection attempts (semicolons, empty, numeric start, reserved words)",
+        "Unit test: invalid column type like VARCHAR(255) rejected"
       ],
       "permissions": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
       "cli_params": "claude --model sonnet --allowedTools Read,Write,Edit,Bash,Glob,Grep --timeout 600",
@@ -1234,7 +1272,7 @@ CRUISE-012 (Integration) ← depends on all above
       "id": "CRUISE-006b",
       "subject": "Table/Column Handlers and Full Router Wiring",
       "description": "Create table handlers (list, create, delete, show detail) and column handlers (add, drop). Wire table/column routes into the existing protected router group established in CRUISE-006a. All routes are behind auth middleware and CSRF validation.",
-      "blocked_by": ["CRUISE-004", "CRUISE-005", "CRUISE-006a"],
+      "blocked_by": ["CRUISE-004b", "CRUISE-005", "CRUISE-006a"],
       "complexity": "medium",
       "acceptance_criteria": [
         "GET /tables returns table list partial (protected)",
@@ -1343,7 +1381,7 @@ CRUISE-012 (Integration) ← depends on all above
       "id": "CRUISE-012",
       "subject": "Integration Testing and Final Verification",
       "description": "End-to-end verification: generate keys, build server, verify healthz and JWKS endpoints manually via curl, run cargo test (all unit tests), run Playwright E2E tests. Fix any issues found. Ensure no compiler warnings. Final commit.",
-      "blocked_by": ["CRUISE-001", "CRUISE-002", "CRUISE-003", "CRUISE-004", "CRUISE-005", "CRUISE-006a", "CRUISE-006b", "CRUISE-007", "CRUISE-008", "CRUISE-009", "CRUISE-010", "CRUISE-011"],
+      "blocked_by": ["CRUISE-001", "CRUISE-002", "CRUISE-003", "CRUISE-004a", "CRUISE-004b", "CRUISE-005", "CRUISE-006a", "CRUISE-006b", "CRUISE-007", "CRUISE-008", "CRUISE-009", "CRUISE-010", "CRUISE-011"],
       "complexity": "medium",
       "acceptance_criteria": [
         "cargo build succeeds with no warnings",
