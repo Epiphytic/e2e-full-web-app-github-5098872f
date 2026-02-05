@@ -602,7 +602,7 @@ tower-http = { version = "0.6", features = ["fs"] }
 
 `src/handlers/auth.rs`:
 - `login_page()` - renders login.html template
-- `login_submit(Form<LoginForm>)` - validates JWT, sets HttpOnly SameSite=Strict cookie, generates a per-session CSRF token (random 32-byte hex string stored server-side keyed to the session), sets it as a second cookie or embeds it in the redirect response, redirects to /
+- `login_submit(Form<LoginForm>)` - validates JWT, sets Secure HttpOnly SameSite=Strict cookie, generates a per-session CSRF token (random 32-byte hex string stored server-side keyed to the session), sets it as a second cookie or embeds it in the redirect response, redirects to /
 - `logout()` - clears cookie and CSRF token, redirects to /login
 - `dashboard(Request)` - extracts Claims from extensions, renders dashboard.html with CSRF token embedded in a `<meta name="csrf-token">` tag for htmx to read
 
@@ -1216,7 +1216,7 @@ CRUISE-012 (Integration) ← depends on all above
       "complexity": "high",
       "acceptance_criteria": [
         "Login page renders at GET /login",
-        "POST /login validates JWT, sets HttpOnly SameSite=Strict cookie, and generates a per-session CSRF token",
+        "POST /login validates JWT, sets Secure HttpOnly SameSite=Strict cookie, and generates a per-session CSRF token",
         "GET /logout clears cookie and redirects to /login",
         "GET / shows dashboard (protected)",
         "GET /static/* serves static files",
