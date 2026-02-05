@@ -604,6 +604,8 @@ git commit -m "feat: Askama templates and htmx static assets"
 
 ### Task CRUISE-006a: Auth Handlers, Config, and Router Setup
 
+> **Split rationale:** Originally part of a single CRUISE-006 task. Split into 006a (auth handlers + router) and 006b (table/column handlers) to reduce bottleneck in the dependency graph. This task only depends on auth logic (002, 003) and templates (005), so it can start in parallel with the Database Layer (004a/004b), shortening the critical path.
+
 **Files:**
 - Create: `src/handlers/mod.rs`
 - Create: `src/handlers/auth.rs`
@@ -659,6 +661,8 @@ git commit -m "feat: auth handlers, config, CSRF infrastructure, and initial rou
 ---
 
 ### Task CRUISE-006b: Table/Column Handlers and Full Router Wiring
+
+> **Split rationale:** Separated from CRUISE-006a so that auth handler work isn't blocked by the Database Layer. This task depends on the DB layer (004b) and the router setup (006a), and wires in the data-manipulation routes once both are ready.
 
 **Files:**
 - Create: `src/handlers/tables.rs`
@@ -1067,7 +1071,7 @@ CRUISE-012 (Integration) ← depends on all above
 **Parallelization opportunities after CRUISE-001:**
 - CRUISE-002+003, CRUISE-004a, CRUISE-005, CRUISE-007, CRUISE-009, CRUISE-010 can all run in parallel.
 - CRUISE-004b can start as soon as CRUISE-004a completes, allowing focused security review of DDL operations and identifier validation separately from connection/query logic.
-- CRUISE-006a can start as soon as 002, 003, and 005 are complete — without waiting for the Database Layer (004a/004b). This reduces the critical path by allowing auth handler development to proceed in parallel with database layer work.
+- **Critical path optimization via 006a/006b split:** CRUISE-006a (Auth Handlers + Router Setup) depends only on 002, 003, and 005 — it does NOT depend on the Database Layer (004a/004b). This means auth handler development can proceed in parallel with database layer work, rather than being blocked by it. CRUISE-006b (Table/Column Handlers) is the only task that needs both the DB layer and the router setup. This split removes the original CRUISE-006 as a dependency-graph bottleneck and shortens the overall critical path.
 
 ---
 
